@@ -1,5 +1,5 @@
 {
-  "tagline": "Cea mai scurtă rută pe jos prin toate curțile unui flyer Hofflohmärkte — totul pe jos 🚶",
+  "tagline": "Cea mai scurtă rută pe jos prin toate curțile unui flyer Hofflohmärkte",
   "step1.title": "Încarcă PDF-ul cu harta",
   "step1.choose": "📄 Alege PDF",
   "step1.or": "sau",
@@ -7,6 +7,7 @@
   "step1.load": "Încarcă harta",
   "step1.errNoInput": "Alege un fișier PDF sau introdu un URL.",
   "step2.title": "Calibrare",
+  "step2.optional": "opțional",
   "step2.intro": "Punctele de piață detectate sunt încercuite cu roz, iconițele stațiilor cu albastru/verde. Marchează cel puțin 3 repere: <b>Alege pe hartă</b> → dă clic pe reper → caută poziția lui reală. Cu <b>Setează zona hărții</b> (două clicuri) excluzi grafica legendei.",
   "step2.addCp": "＋ punct de reper",
   "step2.bbox": "⬚ Setează zona hărții",
@@ -34,13 +35,14 @@
   "res.title": "Rezultate",
   "chip.courtyards": "📍 {n} curți",
   "chip.fit": "🎯 calibrare rms {v} m",
-  "chip.walk": "🚶 doar pe jos",
+  "chip.walk": "🚶",
   "v.station_to_station": "Stație → stație",
   "v.loop": "Buclă de la stație",
   "v.circle": "Cerc liber",
   "stat.streets": "<b>{km} km</b> pe străzi",
   "stat.bird": "<b>{km} km</b> în linie dreaptă",
   "stat.hours": "~{h} h mers pur",
+  "stat.noGps": "doar ordinea rutei (adaugă calibrare pentru distanțe)",
   "cap.orig": "Flyer original",
   "cap.route": "Rută: {name}",
   "res.osmTitle": "Hartă interactivă (OpenStreetMap)",
@@ -57,6 +59,5 @@
   "foot.geo": "Geodate ©",
   "foot.routing": "Rutare de",
   "foot.geocoding": "Geocodare de",
-  "foot.walk": "Toate rutele sunt pe jos 🚶",
   "foot.exports": "Exporturi: PDF · GPX · KML · GeoJSON · Google Maps"
 }

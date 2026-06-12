@@ -36,13 +36,15 @@ Requires Python 3.10+.
 
 ```bash
 ./setup.sh                # creates .venv/ and installs requirements.txt
+source .venv/bin/activate
 ```
 
 or manually:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ## Usage
@@ -50,7 +52,8 @@ python3 -m venv .venv
 ### Web UI
 
 ```bash
-.venv/bin/uvicorn webapp:app --port 8000
+source .venv/bin/activate
+uvicorn webapp:app --port 8000
 # or: docker compose up
 ```
 
@@ -73,11 +76,12 @@ to the `LANGS` list and the selector in `static/index.html`.
 ### CLI
 
 ```bash
-.venv/bin/python hoffroute.py hofflohmaerkte-haidhausen.pdf \
+source .venv/bin/activate
+python hoffroute.py hofflohmaerkte-haidhausen.pdf \
     --calib calib_haidhausen.json -o route_out
 
 # the PDF can also be a URL:
-.venv/bin/python hoffroute.py https://example.org/flyer.pdf \
+python hoffroute.py https://example.org/flyer.pdf \
     --calib calib.json -o route_out
 ```
 
@@ -126,7 +130,7 @@ script can find them for you.
 writes a pre-filled template plus a rendered PNG of the page:
 
 ```bash
-.venv/bin/python hoffroute.py new-map.pdf --find-landmarks -o calib_work
+python hoffroute.py new-map.pdf --find-landmarks -o calib_work
 # -> calib_work/calib_template.json  (icon pixel positions already filled in)
 # -> calib_work/map_render.png       (the page at 300 dpi, for orientation)
 ```
@@ -206,17 +210,82 @@ needs outbound HTTPS to nominatim.openstreetmap.org (geocoding) and
 routing.openstreetmap.de (walking geometry) — both optional, the pipeline
 falls back to straight lines without them.
 
+### Pushing to Docker Hub
+
+**One-off push** (replace `you` with your Docker Hub username):
+
+```bash
+# 1. build
+docker build --target runner -t you/hoffroute:latest .
+
+# 2. log in (once per machine)
+docker login
+
+# 3. push
+docker push you/hoffroute:latest
+
+# tag a versioned release at the same time
+docker tag you/hoffroute:latest you/hoffroute:1.0.0
+docker push you/hoffroute:1.0.0
+```
+
+**Multi-arch build** (produces a single image that runs on both Intel/AMD and
+Apple Silicon / ARM servers — recommended for shared deployments):
+
+```bash
+# create a builder that supports multi-platform output (once per machine)
+docker buildx create --name multi --use
+
+# build + push in one step
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --target runner \
+  -t you/hoffroute:latest \
+  --push .
+```
+
+The image is ~200 MB on `python:3.12-slim`.  No secrets or API keys are
+required at runtime.
+
+**Using a pushed image with docker compose** — set `IMAGE_TAG` in `.env` and
+point the compose file at your registry image instead of building locally:
+
+```yaml
+# docker-compose.yml  (snippet)
+services:
+  hoffroute:
+    image: you/hoffroute:${IMAGE_TAG:-latest}
+    # remove or comment out the `build:` block
+```
+
+Then `docker compose pull && docker compose up -d`.
+
 ### CI
 
 [.github/workflows/build.yml](.github/workflows/build.yml) builds the image
-and smoke-tests `/health` on every push/PR. Registry push is included as a
-commented-out template (set your registry + secrets to enable it).
+and smoke-tests `/health` on every push/PR. It contains a commented-out push
+block — uncomment it, set `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as
+repository secrets in GitHub, and every merge to `main` will publish a fresh
+image automatically:
+
+```yaml
+# .github/workflows/build.yml  (uncomment to enable)
+- name: Log in to Docker Hub
+  uses: docker/login-action@v3
+  with:
+    username: ${{ secrets.DOCKERHUB_USERNAME }}
+    password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+- name: Push image
+  run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/hoffroute:latest
+```
 
 ### Environment variables
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PORT` | `8000` | host port published by docker compose |
+| `APP_PORT` | `8000` | in-container port uvicorn listens on (change when the platform mandates a specific port, e.g. 8080) |
 | `IMAGE_TAG` | `latest` | image tag used by docker compose |
 | `HOFFROUTE_JOBS_DIR` | `jobs` (app) / `/data/jobs` (container) | where job files are stored |
 

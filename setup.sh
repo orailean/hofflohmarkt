@@ -4,9 +4,16 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 python3 -m venv .venv
-.venv/bin/pip install --upgrade pip --quiet
-.venv/bin/pip install -r requirements.txt
+# shellcheck source=/dev/null
+source .venv/bin/activate
+
+pip install --upgrade pip --quiet
+pip install -r requirements.txt
 
 echo
-echo "Done. Run the planner with:"
-echo "  .venv/bin/python hoffroute.py <map.pdf> --calib calib_haidhausen.json -o route_out"
+echo "Virtual environment ready. Activate it with:"
+echo "  source .venv/bin/activate"
+echo ""
+echo "Then run the planner with:"
+echo "  python hoffroute.py <map.pdf> -o route_out"
+echo "  uvicorn webapp:app --port 8000"

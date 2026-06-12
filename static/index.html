@@ -33,9 +33,10 @@
   .card { background:var(--card); border-radius:var(--radius); padding:22px;
           margin-bottom:18px; box-shadow:var(--shadow); }
   .step { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
-  .step .n { width:28px; height:28px; border-radius:9px; flex:0 0 28px;
-             background:var(--pink-d); color:#fff; font-weight:800; font-size:14px;
-             display:flex; align-items:center; justify-content:center; }
+  .n { width:28px; height:28px; border-radius:9px; flex:0 0 28px;
+       background:var(--pink-d); color:#fff; font-weight:800; font-size:14px;
+       display:flex; align-items:center; justify-content:center; }
+  .adv-summary .n { background:var(--violet); }
   .step h2 { margin:0; font-size:16.5px; font-weight:700; }
   .muted { color:var(--mut); font-size:13px; }
   input[type=text], input[type=number], select {
@@ -49,6 +50,14 @@
   button:disabled { opacity:.45; cursor:default; }
   button.ghost { background:#f1f3f5; color:var(--ink); }
   button.primary { background:var(--pink-d); }
+  summary { list-style:none; outline:none; }
+  summary::-webkit-details-marker { display:none; }
+  .adv-summary { cursor:pointer; display:flex; align-items:center; gap:10px; padding:2px 0; }
+  .adv-summary .n { background:var(--violet); }
+  .adv-summary h2 { margin:0; font-size:16.5px; font-weight:700; }
+  .adv-tag { font-size:12px; color:var(--mut); border:1.5px solid var(--line);
+             border-radius:6px; padding:2px 8px; font-weight:600; }
+  .adv-chevron { margin-left:auto; color:var(--mut); font-size:15px; transition:transform .15s; }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   .filebtn { position:relative; overflow:hidden; }
   .filebtn input { position:absolute; inset:0; opacity:0; cursor:pointer; }
@@ -61,7 +70,10 @@
        letter-spacing:.4px; }
   th, td { padding:6px 6px; border-bottom:1px solid var(--line); text-align:left; }
   td input { width:100%; }
-  td .num { width:86px; }
+  td .num { width:100px; }
+  .find-cell { display:flex; gap:4px; align-items:center; }
+  .find-cell input { width:140px; flex-shrink:0; }
+  .find-cell button { flex-shrink:0; padding:6px 10px; font-size:12.5px; }
   .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 12px;
           border-radius:999px; font-size:12.5px; font-weight:600; }
   .err { color:#c92a2a; font-size:13px; margin-top:8px; white-space:pre-wrap; }
@@ -143,31 +155,45 @@
   </div>
 
   <div class="card" id="step2" style="display:none">
-    <div class="step"><div class="n">2</div><h2 data-i18n="step2.title"></h2></div>
-    <p class="muted" style="margin-top:0" data-i18n-html="step2.intro"></p>
-    <div class="row">
-      <button id="addCp" class="ghost" data-i18n="step2.addCp"></button>
-      <button id="bboxBtn" class="ghost" data-i18n="step2.bbox"></button>
-      <button id="importCalib" class="ghost" data-i18n="step2.import"></button>
-      <button id="exportCalib" class="ghost" data-i18n="step2.export"></button>
-      <input type="file" id="calibFile" accept="application/json" style="display:none">
-      <span class="pill" style="background:#fff0f6;color:var(--pink-d)" id="dotCount"></span>
-    </div>
-    <table id="cpTable">
-      <thead><tr><th data-i18n="th.name"></th><th>px</th><th>py</th><th>lat</th><th>lon</th>
-        <th data-i18n="th.find"></th><th data-i18n="th.station"></th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div id="mapwrap"><img id="mapimg"><svg id="overlay"></svg></div>
-    <div class="muted" id="clickHint"></div>
+    <details id="calibDetails">
+      <summary class="adv-summary">
+        <div class="n">2</div>
+        <h2 data-i18n="step2.title"></h2>
+        <span class="adv-tag" data-i18n="step2.optional"></span>
+        <span class="adv-chevron" id="calibChevron">▸</span>
+      </summary>
+      <div style="margin-top:14px">
+        <p class="muted" style="margin-top:0" data-i18n-html="step2.intro"></p>
+        <div class="row">
+          <button id="addCp" class="ghost" data-i18n="step2.addCp"></button>
+          <button id="bboxBtn" class="ghost" data-i18n="step2.bbox"></button>
+          <button id="importCalib" class="ghost" data-i18n="step2.import"></button>
+          <button id="exportCalib" class="ghost" data-i18n="step2.export"></button>
+          <input type="file" id="calibFile" accept="application/json" style="display:none">
+          <span class="pill" style="background:#fff0f6;color:var(--pink-d)" id="dotCount"></span>
+        </div>
+        <table id="cpTable">
+          <thead><tr>
+            <th data-i18n="th.name"></th>
+            <th>lat</th><th>lon</th>
+            <th data-i18n="th.find"></th>
+            <th data-i18n="th.station"></th>
+            <th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="mapwrap"><img id="mapimg"><svg id="overlay"></svg></div>
+        <div class="muted" id="clickHint"></div>
+      </div>
+    </details>
   </div>
 
   <div class="card" id="step3" style="display:none">
     <div class="step"><div class="n">3</div><h2 data-i18n="step3.title"></h2></div>
     <div class="row">
       <label><input type="checkbox" id="useOsrm" checked> <span data-i18n="step3.osrm"></span></label>
-      <label><span data-i18n="step3.start"></span> <select id="selStart"></select></label>
-      <label><span data-i18n="step3.end"></span> <select id="selEnd"></select></label>
+      <label id="startLabel"><span data-i18n="step3.start"></span> <select id="selStart"></select></label>
+      <label id="endLabel"><span data-i18n="step3.end"></span> <select id="selEnd"></select></label>
       <button id="solveBtn" class="primary" data-i18n="step3.solve"></button>
       <div class="spin" id="spinner2"></div>
     </div>
@@ -175,7 +201,7 @@
   </div>
 
   <div class="card" id="results" style="display:none">
-    <div class="step"><div class="n">4</div><h2 data-i18n="res.title"></h2></div>
+    <div class="step"><div class="n">3</div><h2 data-i18n="res.title"></h2></div>
     <div class="chips" id="chips"></div>
     <div class="tabs" id="tabs"></div>
     <p class="vstat" id="vstat"></p>
@@ -184,10 +210,12 @@
       <div class="pane"><div class="cap" data-i18n="cap.orig"></div><img id="imgOrig"></div>
       <div class="pane"><div class="cap" id="capRoute"></div><img id="imgRoute"></div>
     </div>
-    <h3 data-i18n="res.osmTitle"></h3>
-    <p class="muted" style="margin:2px 0 0"><span data-i18n="res.osmSub"></span>
-      <a id="osmFull" target="_blank" data-i18n="res.osmFull"></a></p>
-    <iframe id="mapframe"></iframe>
+    <div id="osmSection">
+      <h3 data-i18n="res.osmTitle"></h3>
+      <p class="muted" style="margin:2px 0 0"><span data-i18n="res.osmSub"></span>
+        <a id="osmFull" target="_blank" data-i18n="res.osmFull"></a></p>
+      <iframe id="mapframe"></iframe>
+    </div>
     <h3 data-i18n="res.files"></h3>
     <div class="files" id="fileGrid"></div>
   </div>
@@ -200,8 +228,7 @@
     <div><span data-i18n="foot.geo"></span> <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a><br>
       <span data-i18n="foot.routing"></span> <a href="https://routing.openstreetmap.de" target="_blank">FOSSGIS&nbsp;OSRM</a> ·
       <span data-i18n="foot.geocoding"></span> <a href="https://nominatim.org" target="_blank">Nominatim</a></div>
-    <div><span data-i18n="foot.walk"></span><br>
-      <span data-i18n="foot.exports"></span></div>
+    <div><span data-i18n="foot.exports"></span></div>
   </div>
 </footer>
 <script>
@@ -255,6 +282,11 @@ $('langSel').onchange = () => {
     if (summary) showResults();
   });
 };
+
+$('calibDetails').addEventListener('toggle', () => {
+  $('calibChevron').textContent = $('calibDetails').open ? '▾' : '▸';
+  refreshStationSelects();
+});
 
 // ---------- step 1: load ----------
 $('pdfFile').onchange = () => {
@@ -353,17 +385,15 @@ function renderTable() {
     tr.innerHTML = `
       <td><input type="text" data-k="name" data-i="${i}" value="${c.name||''}"
            placeholder="${c.kind||'landmark'} ${i+1}"></td>
-      <td><input class="num" type="number" step="0.1" data-k="px" data-i="${i}" value="${c.px}"></td>
-      <td><input class="num" type="number" step="0.1" data-k="py" data-i="${i}" value="${c.py}"></td>
       <td><input class="num" type="number" step="0.0000001" data-k="lat" data-i="${i}" value="${c.lat??''}"></td>
       <td><input class="num" type="number" step="0.0000001" data-k="lon" data-i="${i}" value="${c.lon??''}"></td>
-      <td style="white-space:nowrap">
-        <button class="ghost" data-pick="${i}">${t('btn.pick')}</button>
-        <input type="text" data-geo="${i}" placeholder="${t('ph.search')}" size="14">
+      <td><div class="find-cell">
+        <input type="text" data-geo="${i}" placeholder="${t('ph.search')}">
         <button class="ghost" data-geobtn="${i}">${t('btn.search')}</button>
-      </td>
+        <button class="ghost" data-pick="${i}" title="${t('btn.pick')}">📍</button>
+      </div></td>
       <td style="text-align:center"><input type="checkbox" data-k="station" data-i="${i}" ${c.station?'checked':''}></td>
-      <td><button class="ghost" data-del="${i}">×</button></td>`;
+      <td><button class="ghost" data-del="${i}" style="padding:5px 10px">×</button></td>`;
     tb.appendChild(tr);
   });
   tb.querySelectorAll('input[data-k]').forEach(el => el.onchange = () => {
@@ -448,10 +478,14 @@ $('calibFile').onchange = async () => {
 };
 
 function refreshStationSelects() {
+  const stations = cps.filter(c => c.station && c.lat != null);
+  const show = stations.length > 0 && $('calibDetails').open;
+  $('startLabel').style.display = show ? '' : 'none';
+  $('endLabel').style.display = show ? '' : 'none';
   for (const sel of [$('selStart'), $('selEnd')]) {
     const cur = sel.value;
     sel.innerHTML = `<option value="">${t('step3.auto')}</option>`;
-    cps.filter(c => c.station && c.lat != null).forEach(c => {
+    stations.forEach(c => {
       const o = document.createElement('option');
       o.value = o.textContent = c.name || 'station';
       sel.appendChild(o);
@@ -463,16 +497,23 @@ function refreshStationSelects() {
 // ---------- step 3: solve ----------
 $('solveBtn').onclick = async () => {
   $('err3').textContent = '';
-  const calib = buildCalib();
-  const bad = calib.control_points.filter(p => p.lat == null || p.lon == null);
-  if (calib.control_points.length < 3) { $('err3').textContent = t('err.needCp'); return; }
-  if (bad.length) { $('err3').textContent = t('err.missing', {names: bad.map(p=>p.name).join(', ')}); return; }
+  let calib = null;
+  if ($('calibDetails').open) {
+    const built = buildCalib();
+    const hasAnyGPS = built.control_points.some(p => p.lat != null || p.lon != null);
+    if (hasAnyGPS) {
+      if (built.control_points.length < 3) { $('err3').textContent = t('err.needCp'); return; }
+      const bad = built.control_points.filter(p => p.lat == null || p.lon == null);
+      if (bad.length) { $('err3').textContent = t('err.missing', {names: bad.map(p=>p.name).join(', ')}); return; }
+      calib = built;
+    }
+  }
   $('spinner2').classList.add('on'); $('solveBtn').disabled = true;
   try {
     const r = await fetch('/api/solve', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_id: job.job_id, calib,
-        start: $('selStart').value, end: $('selEnd').value,
+        start: $('selStart').value || null, end: $('selEnd').value || null,
         use_osrm: $('useOsrm').checked})});
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     summary = await r.json();
@@ -484,9 +525,10 @@ $('solveBtn').onclick = async () => {
 
 // ---------- results ----------
 function showResults() {
+  const hasGPS = summary.fit_rms_m !== null;
   $('chips').innerHTML =
     `<span class="chip">${t('chip.courtyards', {n: summary.dots})}</span>` +
-    `<span class="chip">${t('chip.fit', {v: summary.fit_rms_m})}</span>` +
+    (hasGPS ? `<span class="chip">${t('chip.fit', {v: summary.fit_rms_m})}</span>` : '') +
     `<span class="chip">${t('chip.walk')}</span>`;
   const tabs = $('tabs');
   tabs.innerHTML = '';
@@ -498,8 +540,11 @@ function showResults() {
     tabs.appendChild(b);
   });
   $('imgOrig').src = summary.base + '/original.png';
-  $('osmFull').href = summary.base + '/routes_map.html';
-  $('mapframe').src = summary.base + '/routes_map.html';
+  $('osmSection').style.display = hasGPS ? '' : 'none';
+  if (hasGPS) {
+    $('osmFull').href = summary.base + '/routes_map.html';
+    $('mapframe').src = summary.base + '/routes_map.html';
+  }
   const grid = $('fileGrid');
   grid.innerHTML = '';
   const icon = f => f.endsWith('.pdf') ? '📕' : f.endsWith('.gpx') ? '🧭'
@@ -524,17 +569,23 @@ function selectVariant(key) {
   $('tabs').querySelectorAll('button').forEach(b =>
     b.classList.toggle('active', b.dataset.key === key));
   const dist = v.street_km ? t('stat.streets', {km: v.street_km})
-                           : t('stat.bird', {km: v.bird_km});
+               : v.bird_km ? t('stat.bird', {km: v.bird_km})
+               : t('stat.noGps');
   const hours = v.walk_h ? ' · ' + t('stat.hours', {h: v.walk_h}) : '';
   $('vstat').innerHTML = `${v.name} — ${dist}${hours}`;
   $('capRoute').textContent = t('cap.route', {name: t('v.' + v.key)});
   $('imgRoute').src = v.png;
-  $('vactions').innerHTML = `
-    <a href="${v.gmaps}" target="_blank"><button class="primary">${t('act.gmaps')}</button></a>
-    <a href="${summary.base}/routes_map.html" target="_blank"><button>${t('act.osm')}</button></a>
-    <a href="${v.kml}" download><button class="ghost">${t('act.kml')}</button></a>
-    <a href="${v.gpx}" download><button class="ghost">${t('act.gpx')}</button></a>
-    <a href="${v.pdf}" target="_blank"><button class="ghost">${t('act.pdf')}</button></a>`;
+  let actions = '';
+  if (v.gmaps)
+    actions += `<a href="${v.gmaps}" target="_blank"><button class="primary">${t('act.gmaps')}</button></a>`;
+  if (summary.fit_rms_m !== null)
+    actions += `<a href="${summary.base}/routes_map.html" target="_blank"><button>${t('act.osm')}</button></a>`;
+  if (v.kml)
+    actions += `<a href="${v.kml}" download><button class="ghost">${t('act.kml')}</button></a>`;
+  if (v.gpx)
+    actions += `<a href="${v.gpx}" download><button class="ghost">${t('act.gpx')}</button></a>`;
+  actions += `<a href="${v.pdf}" target="_blank"><button class="ghost">${t('act.pdf')}</button></a>`;
+  $('vactions').innerHTML = actions;
 }
 
 loadLang();

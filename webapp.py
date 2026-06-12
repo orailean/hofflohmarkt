@@ -100,12 +100,19 @@ def prepare(file: UploadFile | None = None, url: str = Form(None)):
 @app.post("/api/solve")
 def solve(payload: dict):
     d = job_dir(payload.get("job_id", ""))
-    calib = payload.get("calib") or {}
-    if len(calib.get("control_points", [])) < 3:
-        raise HTTPException(400, "need at least 3 control points")
-    for cp in calib["control_points"]:
-        if cp.get("lat") is None or cp.get("lon") is None:
-            raise HTTPException(400, f"control point '{cp.get('name')}' has no lat/lon")
+    calib = payload.get("calib") or None
+
+    # Treat calib as absent when fewer than 3 control points are supplied
+    if calib is not None:
+        cps = calib.get("control_points", [])
+        if len(cps) < 3:
+            calib = None
+        else:
+            for cp in cps:
+                if cp.get("lat") is None or cp.get("lon") is None:
+                    raise HTTPException(
+                        400, f"control point '{cp.get('name')}' has no lat/lon")
+
     pdfs = [p for p in d.glob("*.pdf") if not p.name.startswith("route_")]
     if not pdfs:
         raise HTTPException(404, "job has no PDF")
@@ -123,14 +130,19 @@ def solve(payload: dict):
     except Exception as e:
         raise HTTPException(422, f"pipeline failed: {e}")
 
-    (d / "calib.json").write_text(json.dumps(calib, indent=2, ensure_ascii=False))
+    if calib:
+        (d / "calib.json").write_text(json.dumps(calib, indent=2, ensure_ascii=False))
     base = f"/jobs/{d.name}/out"
     summary["log"] = log_lines
     summary["base"] = base
     summary["files"] = [f"{base}/{f}" for f in summary["files"]]
     for v in summary["variants"]:
-        for k in ("pdf", "gpx", "kml", "png"):
-            v[k] = f"{base}/{v[k]}"
+        v["pdf"] = f"{base}/{v['pdf']}"
+        v["png"] = f"{base}/{v['png']}"
+        if v.get("gpx"):
+            v["gpx"] = f"{base}/{v['gpx']}"
+        if v.get("kml"):
+            v["kml"] = f"{base}/{v['kml']}"
     return JSONResponse(summary)
 
 

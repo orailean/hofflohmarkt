@@ -19,7 +19,7 @@ services:
           memory: 1G
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+             "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ.get('APP_PORT','8000')}/health\")"]
       interval: 30s
       timeout: 5s
       retries: 3

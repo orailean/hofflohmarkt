@@ -70,8 +70,10 @@ def render_page(pdf_path, dpi):
     return doc, img[..., :3].astype(int)
 
 
-def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18):
-    """Detect pink/red market dots inside bbox; split touching clusters."""
+def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=4.0):
+    """Detect pink/red market dots inside bbox; split touching clusters.
+    Any dot whose nearest neighbour is more than isolation_factor × the median
+    nearest-neighbour distance is dropped as a legend/decoration dot."""
     r, g, b = img[..., 0], img[..., 1], img[..., 2]
     mask = (r > 160) & (g < 80) & (b > 60) & (b < 150)
     box = np.zeros_like(mask)
@@ -89,6 +91,15 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18):
             continue
         used |= (px - px[i]) ** 2 + (py - py[i]) ** 2 < merge_dist_px ** 2
         pts.append((float(px[i]), float(py[i])))
+
+    if len(pts) > 2:
+        arr = np.array(pts)
+        d = np.sqrt(((arr[:, None] - arr[None, :]) ** 2).sum(axis=2))
+        np.fill_diagonal(d, np.inf)
+        nn = d.min(axis=1)
+        threshold = isolation_factor * float(np.median(nn))
+        pts = [p for p, nd in zip(pts, nn) if nd <= threshold]
+
     return pts
 
 
@@ -169,6 +180,13 @@ def haversine_matrix(coords):
     dlat, dlon = lat - lat.T, lon - lon.T
     a = np.sin(dlat / 2) ** 2 + np.cos(lat) * np.cos(lat.T) * np.sin(dlon / 2) ** 2
     return 2 * EARTH_R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+
+
+def euclidean_matrix(pts):
+    """Euclidean distance matrix from a list of (x, y) pixel pairs."""
+    a = np.array(pts, dtype=float)
+    diff = a[:, None, :] - a[None, :, :]
+    return np.sqrt((diff ** 2).sum(axis=2))
 
 
 # ----------------------------------------------------------------------------
@@ -493,43 +511,70 @@ def fetch_pdf(src, dest_dir):
 
 def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
                  use_osrm=True, log=print):
-    """Full pipeline on a local PDF. calib is the parsed calibration dict.
+    """Full pipeline on a local PDF. calib is the parsed calibration dict, or
+    None to run in pixel-only mode (annotated PDFs only; no GPS exports).
     Returns a summary dict (dot count, fit rms, per-variant stats, files)."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    stations = calib.get("stations", [])
 
-    log("1/6 rendering + detecting dots ...")
+    calibrated = (calib is not None and
+                  len(calib.get("control_points", [])) >= 3)
+    steps = 6 if calibrated else 4
+
+    # --- 1. render + detect dots ---
+    log(f"1/{steps} rendering + detecting dots ...")
     _, img = render_page(pdf_path, dpi)
-    dots_px = detect_dots(img, calib["map_bbox_px"])
+    h, w = img.shape[:2]
+    bbox = calib["map_bbox_px"] if calibrated else [0, 0, w, h]
+    dots_px = detect_dots(img, bbox)
     log(f"    {len(dots_px)} market dots found")
     if not dots_px:
-        raise ValueError("no market dots detected - check map_bbox_px")
+        raise ValueError("no market dots detected — check map_bbox_px")
 
-    log("2/6 georeferencing ...")
-    px2ll, rms = fit_affine(calib["control_points"])
-    log(f"    affine fit over {len(calib['control_points'])} control points "
-        f"(rms {rms:.0f} m)")
-    dots_ll = [px2ll(x, y) for x, y in dots_px]
+    # --- 2. node table + distance matrix ---
+    if calibrated:
+        log(f"2/{steps} georeferencing ...")
+        stations = calib.get("stations", [])
+        px2ll, rms = fit_affine(calib["control_points"])
+        log(f"    affine fit over {len(calib['control_points'])} control points "
+            f"(rms {rms:.0f} m)")
+        dots_ll = [px2ll(x, y) for x, y in dots_px]
+        ns = len(stations)
+        coords_arr = np.array([[s["lat"], s["lon"]] for s in stations] +
+                               [list(d) for d in dots_ll]).reshape(-1, 2)
+        D = haversine_matrix(coords_arr)
+        station_names = [s["name"] for s in stations]
+        node_to_px = {i: (s["px"], s["py"]) for i, s in enumerate(stations)}
+    else:
+        log(f"2/{steps} building pixel-space graph (no calibration — "
+            "only annotated PDFs will be produced) ...")
+        stations = []
+        rms = None
+        icons = detect_station_icons(img)
+        ns = len(icons)
+        station_names = [f"{kind.split()[0]} {i + 1}"
+                         for i, (kind, _, _) in enumerate(icons)]
+        icon_pxs = [(float(x), float(y)) for _, x, y in icons]
+        all_px_nodes = icon_pxs + list(dots_px)
+        D = euclidean_matrix(all_px_nodes)
+        node_to_px = {i: pxpos for i, pxpos in enumerate(icon_pxs)}
 
-    # node table: stations first, then dots
-    coords = np.array([[s["lat"], s["lon"]] for s in stations] +
-                      [list(d) for d in dots_ll]).reshape(-1, 2)
-    D = haversine_matrix(coords)
-    ns = len(stations)
-    dot_idx = list(range(ns, ns + len(dots_ll)))
+    for i, p in enumerate(dots_px):
+        node_to_px[ns + i] = p
+    dot_idx = list(range(ns, ns + len(dots_px)))
 
-    log("3/6 solving routes ...")
-    names = [s["name"] for s in stations]
-    variants = []  # dicts: key, gpx name, pdf title, order, bird-line length
+    # --- 3. solve TSP variants ---
+    log(f"3/{steps} solving routes ...")
+    variants = []
 
-    # variant A: open path between two stations (best pair, or forced)
-    if ns >= 2 or (start and end):
-        if start and end:
-            pairs = [(names.index(start), names.index(end))]
+    # variant A: open path between two station nodes (best pair, or forced)
+    if ns >= 2 or (start and end and calibrated):
+        if start and end and calibrated:
+            pairs = [(station_names.index(start), station_names.index(end))]
         else:
+            min_gap = 150 if calibrated else 10
             pairs = [(i, j) for i in range(ns) for j in range(i + 1, ns)
-                     if D[i, j] > 150]  # skip same-place icons (Ostbahnhof U+S)
+                     if D[i, j] > min_gap]
             pairs = pairs or [(0, ns - 1)]
         bestA = None
         for i, j in pairs:
@@ -539,99 +584,116 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         orderA, lenA, sA, eA = bestA
         variants.append(dict(
             key="station_to_station", order=orderA, bird=lenA,
-            name=f"Hofflohmaerkte {names[sA]} to {names[eA]}",
-            title=f"Route: {names[sA]} (S) -> {names[eA]} (Z)"))
-        log(f"    A  {names[sA]} -> {names[eA]}: {lenA/1000:.2f} km bird-line")
+            name=f"Hofflohmaerkte {station_names[sA]} to {station_names[eA]}",
+            title=f"Route: {station_names[sA]} (S) -> {station_names[eA]} (Z)"))
+        suffix = f"{lenA/1000:.2f} km" if calibrated else f"{lenA:.0f} px"
+        log(f"    A  {station_names[sA]} -> {station_names[eA]}: {suffix}")
 
-    # variant B: loop from/to one station
+    # variant B: closed loop from/to one station node
     if ns >= 1:
-        depot = (names.index(start) if start
+        depot = (station_names.index(start)
+                 if start and calibrated and start in station_names
                  else variants[0]["order"][0] if variants else 0)
         orderB, lenB = solve_loop(D, depot, dot_idx)
         variants.append(dict(
             key="loop", order=orderB, bird=lenB,
-            name=f"Hofflohmaerkte loop from {names[depot]}",
-            title=f"Rundweg ab/bis {names[depot]}"))
-        log(f"    B  loop from {names[depot]}: {lenB/1000:.2f} km bird-line")
+            name=f"Hofflohmaerkte loop from {station_names[depot]}",
+            title=f"Rundweg ab/bis {station_names[depot]}"))
+        suffix = f"{lenB/1000:.2f} km" if calibrated else f"{lenB:.0f} px"
+        log(f"    B  loop from {station_names[depot]}: {suffix}")
 
-    # variant C: shortest free circle over the dots only, no fixed start/end
+    # variant C: shortest free circle over dots only, no fixed start/end
     orderC, lenC = solve_circle(D, dot_idx)
     variants.append(dict(
         key="circle", order=orderC, bird=lenC,
         name="Hofflohmaerkte circular tour (dots only)",
         title="Rundtour ueber alle Hoefe (freier Start)"))
-    log(f"    C  free circle over all dots: {lenC/1000:.2f} km bird-line")
+    suffix = f"{lenC/1000:.2f} km" if calibrated else f"{lenC:.0f} px"
+    log(f"    C  free circle: {suffix}")
 
-    def stops_of(order):
-        res = []
-        closed = order[0] == order[-1]
-        for k, n in enumerate(order):
-            if n < ns:
-                label = names[n]
-            elif closed and k == len(order) - 1:
-                label = "Back at start"
-            else:
-                label = f"Stop {k}"
-            res.append((coords[n, 0], coords[n, 1], label))
-        return res
+    # --- 4-5. GPS exports (calibrated mode only) ---
+    if calibrated:
+        def stops_of(order):
+            closed = order[0] == order[-1]
+            res = []
+            for k, n in enumerate(order):
+                if n < ns:
+                    label = station_names[n]
+                elif closed and k == len(order) - 1:
+                    label = "Back at start"
+                else:
+                    label = f"Stop {k}"
+                res.append((coords_arr[n, 0], coords_arr[n, 1], label))
+            return res
 
-    for v in variants:
-        v["stops"] = stops_of(v["order"])
+        for v in variants:
+            v["stops"] = stops_of(v["order"])
 
-    log("4/6 fetching walking geometry (OSRM) ...")
-    for v in variants:
-        v["track"] = v["dist"] = v["dur"] = None
-        if use_osrm:
-            track, dist, dur = osrm_geometry([(la, lo) for la, lo, _ in v["stops"]])
-            v["track"], v["dist"], v["dur"] = track, dist, dur
-            if dist:
-                log(f"    {v['key']}: {dist/1000:.2f} km on streets "
-                    f"(~{dur/3600:.1f} h pure walking)")
+        log(f"4/{steps} fetching walking geometry (OSRM) ...")
+        for v in variants:
+            v["track"] = v["dist"] = v["dur"] = None
+            if use_osrm:
+                track, dist, dur = osrm_geometry(
+                    [(la, lo) for la, lo, _ in v["stops"]])
+                v["track"], v["dist"], v["dur"] = track, dist, dur
+                if dist:
+                    log(f"    {v['key']}: {dist/1000:.2f} km on streets "
+                        f"(~{dur/3600:.1f} h pure walking)")
 
-    log("5/6 writing exports ...")
-    triples = [(v["name"], v["stops"], v["track"]) for v in variants]
-    for v in variants:
-        write_gpx(out / f"route_{v['key']}.gpx", v["name"], v["stops"], v["track"])
-        write_kml(out / f"route_{v['key']}.kml", v["name"], v["stops"], v["track"])
-        v["gmaps"] = gmaps_overview_link(v["stops"])
-    write_geojson(out / "routes.geojson", triples)
-    write_html(out / "routes_map.html", "Hofflohmaerkte routes", triples, stations)
-    txt = ["# Google Maps - one walking link per route (whole route in one",
-           "# shot, downsampled to Google's 9-waypoint URL limit; import the",
-           "# .kml into Google My Maps for the exact full line).", ""]
-    for v in variants:
-        txt += [f"## {v['name']}", v["gmaps"], ""]
-    txt += ["# Appendix: exact stop-by-stop legs (9 waypoints per link)", ""]
-    for v in variants:
-        links = gmaps_links(v["stops"])
-        txt.append(f"## {v['name']} ({len(links)} legs)")
-        txt += [f"{k+1}. {u}" for k, u in enumerate(links)]
-        txt.append("")
-    (out / "google_maps_links.txt").write_text("\n".join(txt))
+        log(f"5/{steps} writing GPS exports ...")
+        triples = [(v["name"], v["stops"], v["track"]) for v in variants]
+        for v in variants:
+            write_gpx(out / f"route_{v['key']}.gpx", v["name"],
+                      v["stops"], v["track"])
+            write_kml(out / f"route_{v['key']}.kml", v["name"],
+                      v["stops"], v["track"])
+            v["gmaps"] = gmaps_overview_link(v["stops"])
+        write_geojson(out / "routes.geojson", triples)
+        write_html(out / "routes_map.html", "Hofflohmaerkte routes",
+                   triples, stations)
+        txt = ["# Google Maps - one walking link per route (whole route in one",
+               "# shot, downsampled to Google's 9-waypoint URL limit; import the",
+               "# .kml into Google My Maps for the exact full line).", ""]
+        for v in variants:
+            txt += [f"## {v['name']}", v["gmaps"], ""]
+        txt += ["# Appendix: exact stop-by-stop legs (9 waypoints per link)", ""]
+        for v in variants:
+            links = gmaps_links(v["stops"])
+            txt.append(f"## {v['name']} ({len(links)} legs)")
+            txt += [f"{k + 1}. {u}" for k, u in enumerate(links)]
+            txt.append("")
+        (out / "google_maps_links.txt").write_text("\n".join(txt))
 
-    log("6/6 annotating PDFs + previews ...")
-    # map route node -> pixel position (stations use their icon px)
-    st_px = {i: (s["px"], s["py"]) for i, s in enumerate(stations)}
+    # --- last step: annotate PDFs + previews (both modes) ---
+    log(f"{steps}/{steps} annotating PDFs + previews ...")
     fitz.open(pdf_path)[0].get_pixmap(dpi=110).save(out / "original.png")
     for v in variants:
-        order_px = [st_px[n] if n < ns else dots_px[n - ns] for n in v["order"]]
-        km = f"{(v['dist'] or v['bird'])/1000:.1f} km"
+        order_px = [node_to_px[n] for n in v["order"]]
+        if calibrated:
+            km = f"{(v.get('dist') or v['bird']) / 1000:.1f} km"
+            title_str = f"{v['title']} | {len(dots_px)} Hoefe | ~{km}"
+        else:
+            title_str = f"{v['title']} | {len(dots_px)} Hoefe"
         pdf_out = out / f"route_{v['key']}.pdf"
-        annotate_pdf(pdf_path, pdf_out, order_px,
-                     f"{v['title']} | {len(dots_px)} Hoefe | ~{km}", dpi=dpi)
-        fitz.open(pdf_out)[0].get_pixmap(dpi=110).save(out / f"route_{v['key']}.png")
+        annotate_pdf(pdf_path, pdf_out, order_px, title_str, dpi=dpi)
+        fitz.open(pdf_out)[0].get_pixmap(dpi=110).save(
+            out / f"route_{v['key']}.png")
 
     return {
         "dots": len(dots_px),
-        "fit_rms_m": round(rms, 1),
+        "fit_rms_m": round(rms, 1) if rms is not None else None,
         "variants": [{
             "key": v["key"], "name": v["name"],
-            "bird_km": round(v["bird"] / 1000, 2),
-            "street_km": round(v["dist"] / 1000, 2) if v["dist"] else None,
-            "walk_h": round(v["dur"] / 3600, 1) if v["dur"] else None,
-            "pdf": f"route_{v['key']}.pdf", "gpx": f"route_{v['key']}.gpx",
-            "kml": f"route_{v['key']}.kml", "png": f"route_{v['key']}.png",
-            "gmaps": v["gmaps"],
+            "bird_km": round(v["bird"] / 1000, 2) if calibrated else None,
+            "street_km": round(v["dist"] / 1000, 2)
+                         if calibrated and v.get("dist") else None,
+            "walk_h": round(v["dur"] / 3600, 1)
+                      if calibrated and v.get("dur") else None,
+            "pdf": f"route_{v['key']}.pdf",
+            "gpx": f"route_{v['key']}.gpx" if calibrated else None,
+            "kml": f"route_{v['key']}.kml" if calibrated else None,
+            "png": f"route_{v['key']}.png",
+            "gmaps": v.get("gmaps") if calibrated else None,
         } for v in variants],
         "files": sorted(f.name for f in out.iterdir() if f.is_file()),
     }
@@ -665,9 +727,13 @@ def main():
     if args.find_landmarks:
         find_landmarks(pdf_path, out, args.dpi)
         return
-    if not args.calib:
-        ap.error("--calib is required (run --find-landmarks first to create one)")
-    calib = json.loads(Path(args.calib).read_text())
+    if args.calib:
+        calib = json.loads(Path(args.calib).read_text())
+    else:
+        calib = None
+        print("No --calib provided — running in pixel-only mode "
+              "(annotated PDFs only, no GPS exports).\n"
+              "Run --find-landmarks to create a calibration file.")
 
     run_pipeline(pdf_path, calib, out, dpi=args.dpi, start=args.start,
                  end=args.end, use_osrm=not args.no_osrm)
