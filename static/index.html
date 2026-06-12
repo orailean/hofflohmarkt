@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hoffroute — Hofflohmärkte route planner</title>
+<style>
+  :root {
+    --pink:#e64980; --pink-d:#c2255c; --violet:#7048e8; --blue:#1c7ed6;
+    --green:#2f9e44; --ink:#1a1c20; --mut:#6c757d; --bg:#f4f5f7;
+    --card:#ffffff; --line:#e9ecef; --radius:16px;
+    --shadow:0 1px 2px rgba(20,20,40,.06), 0 8px 24px rgba(20,20,40,.07);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.55 "Inter",-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header {
+    color:var(--ink); padding:34px 28px; border-bottom:1.5px solid var(--line);
+    background-color:#ece7dc;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 240'%3E%3Crect width='1200' height='240' fill='%23ece7dc'/%3E%3Cpath d='M-20 200 C 200 150, 380 230, 620 180 S 1050 120, 1240 170' stroke='%23a8c8e8' stroke-width='26' fill='none' opacity='.7'/%3E%3Cg fill='%23cfe3c0' opacity='.8'%3E%3Crect x='150' y='30' width='110' height='70' rx='8'/%3E%3Crect x='760' y='120' width='140' height='80' rx='10'/%3E%3Crect x='1050' y='20' width='90' height='60' rx='8'/%3E%3C/g%3E%3Cg stroke='%23ffffff' stroke-width='10' opacity='.9'%3E%3Cpath d='M0 60 H1200' /%3E%3Cpath d='M0 140 H1200'/%3E%3Cpath d='M100 0 V240'/%3E%3Cpath d='M320 0 V240'/%3E%3Cpath d='M540 0 V240'/%3E%3Cpath d='M700 0 L 800 240'/%3E%3Cpath d='M950 0 V240'/%3E%3C/g%3E%3Cg stroke='%23ffffff' stroke-width='4' opacity='.7'%3E%3Cpath d='M0 100 H1200'/%3E%3Cpath d='M0 195 H1200'/%3E%3Cpath d='M210 0 V240'/%3E%3Cpath d='M430 0 V240'/%3E%3Cpath d='M620 0 L 680 240'/%3E%3Cpath d='M860 0 V240'/%3E%3Cpath d='M1070 0 V240'/%3E%3C/g%3E%3Cg fill='%23e64980'%3E%3Ccircle cx='160' cy='118' r='7'/%3E%3Ccircle cx='245' cy='75' r='7'/%3E%3Ccircle cx='305' cy='160' r='7'/%3E%3Ccircle cx='415' cy='52' r='7'/%3E%3Ccircle cx='475' cy='122' r='7'/%3E%3Ccircle cx='588' cy='86' r='7'/%3E%3Ccircle cx='660' cy='158' r='7'/%3E%3Ccircle cx='745' cy='66' r='7'/%3E%3Ccircle cx='838' cy='108' r='7'/%3E%3Ccircle cx='918' cy='180' r='7'/%3E%3Ccircle cx='1005' cy='84' r='7'/%3E%3Ccircle cx='1110' cy='140' r='7'/%3E%3C/g%3E%3C/svg%3E");
+    background-size:cover; background-position:center;
+  }
+  header .brand { display:inline-flex; align-items:flex-start; gap:16px;
+    background:rgba(255,255,255,.86); border-radius:14px; padding:12px 18px;
+    box-shadow:var(--shadow); }
+  header h1 { margin:0; font-size:22px; font-weight:800; letter-spacing:-.3px;
+              color:var(--pink-d); }
+  header p { margin:3px 0 0; color:var(--mut); font-size:13.5px; }
+  #langSel { margin-top:2px; padding:5px 8px; border:1.5px solid var(--line);
+             border-radius:8px; font-size:12.5px; font-weight:600;
+             background:#fff; color:var(--ink); }
+  main { max-width:1240px; margin:0 auto; padding:22px 18px 40px; }
+  .card { background:var(--card); border-radius:var(--radius); padding:22px;
+          margin-bottom:18px; box-shadow:var(--shadow); }
+  .step { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .step .n { width:28px; height:28px; border-radius:9px; flex:0 0 28px;
+             background:var(--pink-d); color:#fff; font-weight:800; font-size:14px;
+             display:flex; align-items:center; justify-content:center; }
+  .step h2 { margin:0; font-size:16.5px; font-weight:700; }
+  .muted { color:var(--mut); font-size:13px; }
+  input[type=text], input[type=number], select {
+    padding:8px 10px; border:1.5px solid var(--line); border-radius:10px;
+    font-size:13.5px; background:#fbfbfc; outline:none; }
+  input:focus, select:focus { border-color:var(--violet); }
+  button { padding:9px 16px; border:0; border-radius:10px; font-size:13.5px;
+           font-weight:600; cursor:pointer; background:var(--blue); color:#fff;
+           transition:filter .12s; }
+  button:hover { filter:brightness(1.08); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.ghost { background:#f1f3f5; color:var(--ink); }
+  button.primary { background:var(--pink-d); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .filebtn { position:relative; overflow:hidden; }
+  .filebtn input { position:absolute; inset:0; opacity:0; cursor:pointer; }
+  #mapwrap { position:relative; overflow:auto; max-height:72vh;
+             border:1.5px solid var(--line); border-radius:12px; margin-top:12px; }
+  #mapwrap img { display:block; width:100%; user-select:none; }
+  #overlay { position:absolute; inset:0; pointer-events:none; }
+  table { border-collapse:collapse; width:100%; font-size:13px; margin-top:10px; }
+  th { color:var(--mut); font-weight:600; font-size:12px; text-transform:uppercase;
+       letter-spacing:.4px; }
+  th, td { padding:6px 6px; border-bottom:1px solid var(--line); text-align:left; }
+  td input { width:100%; }
+  td .num { width:86px; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 12px;
+          border-radius:999px; font-size:12.5px; font-weight:600; }
+  .err { color:#c92a2a; font-size:13px; margin-top:8px; white-space:pre-wrap; }
+  .spin { display:none; width:18px; height:18px; border-radius:50%;
+          border:3px solid #dbe4ff; border-top-color:var(--violet);
+          animation:sp 1s linear infinite; }
+  .spin.on { display:inline-block; }
+  @keyframes sp { to { transform:rotate(360deg);} }
+  .geo-results { position:absolute; background:#fff; border:1px solid var(--line);
+          border-radius:10px; z-index:10; max-width:480px; box-shadow:var(--shadow); }
+  .geo-results div { padding:7px 10px; cursor:pointer; font-size:12.5px; }
+  .geo-results div:hover { background:#edf2ff; }
+  /* results */
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .chip { background:#f1f3f5; border-radius:999px; padding:5px 14px;
+          font-size:13px; font-weight:600; }
+  .tabs { display:inline-flex; background:#f1f3f5; border-radius:12px;
+          padding:4px; gap:4px; margin-bottom:14px; flex-wrap:wrap; }
+  .tabs button { background:transparent; color:var(--mut); border-radius:9px;
+                 padding:8px 14px; font-weight:600; }
+  .tabs button.active { background:#fff; color:var(--ink);
+                        box-shadow:0 1px 4px rgba(0,0,0,.12); }
+  .vstat { font-size:14px; margin:0 0 12px; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  .actions a { text-decoration:none; }
+  .compare { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:860px) { .compare { grid-template-columns:1fr; } }
+  .pane { border:1.5px solid var(--line); border-radius:12px; overflow:hidden;
+          background:#fafbfc; }
+  .pane .cap { padding:8px 12px; font-size:12.5px; font-weight:700;
+               color:var(--mut); text-transform:uppercase; letter-spacing:.5px;
+               border-bottom:1.5px solid var(--line); background:#fff; }
+  .pane img { display:block; width:100%; }
+  .files { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+           gap:8px; margin-top:10px; }
+  .files a { display:flex; gap:8px; align-items:center; padding:10px 12px;
+             background:#f8f9fa; border:1.5px solid var(--line); border-radius:10px;
+             text-decoration:none; color:var(--ink); font-size:13px; font-weight:500; }
+  .files a:hover { border-color:var(--violet); background:#f3f0ff; }
+  iframe { width:100%; height:500px; border:1.5px solid var(--line);
+           border-radius:12px; margin-top:14px; }
+  h3 { font-size:14px; margin:22px 0 4px; }
+  footer { background:#23262b; color:#adb5bd; font-size:13px;
+           padding:26px 28px; margin-top:30px; }
+  footer .inner { max-width:1240px; margin:0 auto; display:flex;
+                  justify-content:space-between; gap:18px; flex-wrap:wrap; }
+  footer b { color:#f1f3f5; }
+  footer a { color:#91a7ff; text-decoration:none; }
+  footer a:hover { text-decoration:underline; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div>
+      <h1>hoffroute</h1>
+      <p data-i18n="tagline"></p>
+    </div>
+    <select id="langSel" title="Language">
+      <option value="en">EN</option>
+      <option value="de">DE</option>
+      <option value="ro">RO</option>
+    </select>
+  </div>
+</header>
+<main>
+
+  <div class="card" id="step1">
+    <div class="step"><div class="n">1</div><h2 data-i18n="step1.title"></h2></div>
+    <div class="row">
+      <button class="ghost filebtn"><span data-i18n="step1.choose"></span><input type="file" id="pdfFile" accept="application/pdf"></button>
+      <span class="muted" id="fileName"></span>
+      <span class="muted" data-i18n="step1.or"></span>
+      <input type="text" id="pdfUrl" data-i18n-ph="step1.urlPh" size="44">
+      <button id="loadBtn" class="primary" data-i18n="step1.load"></button>
+      <div class="spin" id="spinner"></div>
+    </div>
+    <div class="err" id="err1"></div>
+  </div>
+
+  <div class="card" id="step2" style="display:none">
+    <div class="step"><div class="n">2</div><h2 data-i18n="step2.title"></h2></div>
+    <p class="muted" style="margin-top:0" data-i18n-html="step2.intro"></p>
+    <div class="row">
+      <button id="addCp" class="ghost" data-i18n="step2.addCp"></button>
+      <button id="bboxBtn" class="ghost" data-i18n="step2.bbox"></button>
+      <button id="importCalib" class="ghost" data-i18n="step2.import"></button>
+      <button id="exportCalib" class="ghost" data-i18n="step2.export"></button>
+      <input type="file" id="calibFile" accept="application/json" style="display:none">
+      <span class="pill" style="background:#fff0f6;color:var(--pink-d)" id="dotCount"></span>
+    </div>
+    <table id="cpTable">
+      <thead><tr><th data-i18n="th.name"></th><th>px</th><th>py</th><th>lat</th><th>lon</th>
+        <th data-i18n="th.find"></th><th data-i18n="th.station"></th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="mapwrap"><img id="mapimg"><svg id="overlay"></svg></div>
+    <div class="muted" id="clickHint"></div>
+  </div>
+
+  <div class="card" id="step3" style="display:none">
+    <div class="step"><div class="n">3</div><h2 data-i18n="step3.title"></h2></div>
+    <div class="row">
+      <label><input type="checkbox" id="useOsrm" checked> <span data-i18n="step3.osrm"></span></label>
+      <label><span data-i18n="step3.start"></span> <select id="selStart"></select></label>
+      <label><span data-i18n="step3.end"></span> <select id="selEnd"></select></label>
+      <button id="solveBtn" class="primary" data-i18n="step3.solve"></button>
+      <div class="spin" id="spinner2"></div>
+    </div>
+    <div class="err" id="err3"></div>
+  </div>
+
+  <div class="card" id="results" style="display:none">
+    <div class="step"><div class="n">4</div><h2 data-i18n="res.title"></h2></div>
+    <div class="chips" id="chips"></div>
+    <div class="tabs" id="tabs"></div>
+    <p class="vstat" id="vstat"></p>
+    <div class="actions" id="vactions"></div>
+    <div class="compare">
+      <div class="pane"><div class="cap" data-i18n="cap.orig"></div><img id="imgOrig"></div>
+      <div class="pane"><div class="cap" id="capRoute"></div><img id="imgRoute"></div>
+    </div>
+    <h3 data-i18n="res.osmTitle"></h3>
+    <p class="muted" style="margin:2px 0 0"><span data-i18n="res.osmSub"></span>
+      <a id="osmFull" target="_blank" data-i18n="res.osmFull"></a></p>
+    <iframe id="mapframe"></iframe>
+    <h3 data-i18n="res.files"></h3>
+    <div class="files" id="fileGrid"></div>
+  </div>
+
+</main>
+<footer>
+  <div class="inner">
+    <div><b>hoffroute</b> — <span data-i18n="foot.line1"></span><br>
+      <span data-i18n="foot.line2"></span></div>
+    <div><span data-i18n="foot.geo"></span> <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a><br>
+      <span data-i18n="foot.routing"></span> <a href="https://routing.openstreetmap.de" target="_blank">FOSSGIS&nbsp;OSRM</a> ·
+      <span data-i18n="foot.geocoding"></span> <a href="https://nominatim.org" target="_blank">Nominatim</a></div>
+    <div><span data-i18n="foot.walk"></span><br>
+      <span data-i18n="foot.exports"></span></div>
+  </div>
+</footer>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let job = null, cps = [], bbox = null, clickMode = null;
+let summary = null, activeKey = null;
+
+// ---------- i18n ----------
+const LANGS = ['en', 'de', 'ro'];
+let L = {};
+
+function currentLang() {
+  const stored = localStorage.getItem('lang');
+  if (LANGS.includes(stored)) return stored;
+  const nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
+  return LANGS.includes(nav) ? nav : 'en';
+}
+
+function t(key, params) {
+  let s = L[key] || key;
+  if (params) for (const [k, v] of Object.entries(params))
+    s = s.replaceAll('{' + k + '}', v);
+  return s;
+}
+
+function applyStatic() {
+  document.querySelectorAll('[data-i18n]').forEach(el =>
+    el.textContent = t(el.dataset.i18n));
+  document.querySelectorAll('[data-i18n-html]').forEach(el =>
+    el.innerHTML = t(el.dataset.i18nHtml));
+  document.querySelectorAll('[data-i18n-ph]').forEach(el =>
+    el.placeholder = t(el.dataset.i18nPh));
+}
+
+async function loadLang() {
+  const lang = currentLang();
+  try {
+    L = await (await fetch('/static/i18n/' + lang + '.json')).json();
+  } catch { L = {}; }
+  document.documentElement.lang = lang;
+  $('langSel').value = lang;
+  applyStatic();
+  refreshStationSelects();
+}
+
+$('langSel').onchange = () => {
+  localStorage.setItem('lang', $('langSel').value);
+  loadLang().then(() => {
+    if (job) renderTable();
+    if (summary) showResults();
+  });
+};
+
+// ---------- step 1: load ----------
+$('pdfFile').onchange = () => {
+  $('fileName').textContent = $('pdfFile').files[0]?.name || '';
+};
+$('loadBtn').onclick = async () => {
+  $('err1').textContent = '';
+  const fd = new FormData();
+  const f = $('pdfFile').files[0];
+  if (f) fd.append('file', f);
+  else if ($('pdfUrl').value.trim()) fd.append('url', $('pdfUrl').value.trim());
+  else { $('err1').textContent = t('step1.errNoInput'); return; }
+  $('spinner').classList.add('on'); $('loadBtn').disabled = true;
+  try {
+    const r = await fetch('/api/prepare', {method:'POST', body:fd});
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    job = await r.json();
+    initCalibration();
+  } catch (e) { $('err1').textContent = e.message; }
+  $('spinner').classList.remove('on'); $('loadBtn').disabled = false;
+};
+
+function initCalibration() {
+  cps = job.icons.map(ic => ({
+    name: '', px: +ic.px.toFixed(1), py: +ic.py.toFixed(1),
+    lat: null, lon: null, station: true, kind: ic.kind
+  }));
+  bbox = [0, 0, job.width, job.height];
+  $('mapimg').src = job.image + '?t=' + Date.now();
+  $('mapimg').onload = () => drawOverlay();
+  $('step2').style.display = '';
+  $('step3').style.display = '';
+  $('results').style.display = 'none';
+  renderTable();
+}
+
+// ---------- overlay ----------
+function drawOverlay() {
+  const img = $('mapimg');
+  const sx = img.clientWidth / job.width, sy = img.clientHeight / job.height;
+  const svg = $('overlay');
+  svg.setAttribute('width', img.clientWidth);
+  svg.setAttribute('height', img.clientHeight);
+  let s = '';
+  const inBox = d => d.px>=bbox[0] && d.px<=bbox[2] && d.py>=bbox[1] && d.py<=bbox[3];
+  for (const d of job.dots)
+    s += `<circle cx="${d.px*sx}" cy="${d.py*sy}" r="9" fill="none"
+          stroke="${inBox(d) ? '#e64980' : '#adb5bd'}" stroke-width="2"/>`;
+  cps.forEach((c, i) => {
+    const col = c.station ? '#1c7ed6' : '#2f9e44';
+    s += `<circle cx="${c.px*sx}" cy="${c.py*sy}" r="12" fill="none" stroke="${col}" stroke-width="3"/>
+          <text x="${c.px*sx+14}" y="${c.py*sy+4}" fill="${col}" font-size="13" font-weight="bold">${i+1}</text>`;
+  });
+  s += `<rect x="${bbox[0]*sx}" y="${bbox[1]*sy}" width="${(bbox[2]-bbox[0])*sx}"
+        height="${(bbox[3]-bbox[1])*sy}" fill="none" stroke="#fd7e14" stroke-width="2" stroke-dasharray="6 4"/>`;
+  svg.innerHTML = s;
+  $('dotCount').textContent = t('step2.dots', {n: job.dots.filter(inBox).length});
+}
+window.addEventListener('resize', () => job && drawOverlay());
+
+$('mapwrap').addEventListener('click', ev => {
+  if (!clickMode || !job) return;
+  const img = $('mapimg');
+  const r = img.getBoundingClientRect();
+  const px = (ev.clientX - r.left) / img.clientWidth * job.width;
+  const py = (ev.clientY - r.top) / img.clientHeight * job.height;
+  if (clickMode.type === 'cp') {
+    cps[clickMode.idx].px = +px.toFixed(1);
+    cps[clickMode.idx].py = +py.toFixed(1);
+    clickMode = null; $('clickHint').textContent = '';
+    renderTable();
+  } else if (clickMode.type === 'bbox') {
+    if (clickMode.stage === 0) {
+      clickMode.p0 = [px, py]; clickMode.stage = 1;
+      $('clickHint').textContent = t('hint.bbox2');
+    } else {
+      bbox = [Math.min(clickMode.p0[0],px), Math.min(clickMode.p0[1],py),
+              Math.max(clickMode.p0[0],px), Math.max(clickMode.p0[1],py)].map(v=>+v.toFixed(0));
+      clickMode = null; $('clickHint').textContent = '';
+      drawOverlay();
+    }
+  }
+});
+
+$('bboxBtn').onclick = () => {
+  clickMode = {type:'bbox', stage:0};
+  $('clickHint').textContent = t('hint.bbox1');
+};
+
+// ---------- control point table ----------
+function renderTable() {
+  const tb = $('cpTable').querySelector('tbody');
+  tb.innerHTML = '';
+  cps.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" data-k="name" data-i="${i}" value="${c.name||''}"
+           placeholder="${c.kind||'landmark'} ${i+1}"></td>
+      <td><input class="num" type="number" step="0.1" data-k="px" data-i="${i}" value="${c.px}"></td>
+      <td><input class="num" type="number" step="0.1" data-k="py" data-i="${i}" value="${c.py}"></td>
+      <td><input class="num" type="number" step="0.0000001" data-k="lat" data-i="${i}" value="${c.lat??''}"></td>
+      <td><input class="num" type="number" step="0.0000001" data-k="lon" data-i="${i}" value="${c.lon??''}"></td>
+      <td style="white-space:nowrap">
+        <button class="ghost" data-pick="${i}">${t('btn.pick')}</button>
+        <input type="text" data-geo="${i}" placeholder="${t('ph.search')}" size="14">
+        <button class="ghost" data-geobtn="${i}">${t('btn.search')}</button>
+      </td>
+      <td style="text-align:center"><input type="checkbox" data-k="station" data-i="${i}" ${c.station?'checked':''}></td>
+      <td><button class="ghost" data-del="${i}">×</button></td>`;
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('input[data-k]').forEach(el => el.onchange = () => {
+    const c = cps[+el.dataset.i], k = el.dataset.k;
+    c[k] = (k === 'station') ? el.checked :
+           (k === 'name') ? el.value : (el.value === '' ? null : +el.value);
+    drawOverlay(); refreshStationSelects();
+  });
+  tb.querySelectorAll('button[data-pick]').forEach(el => el.onclick = () => {
+    clickMode = {type:'cp', idx:+el.dataset.pick};
+    $('clickHint').textContent = t('hint.cp', {n: +el.dataset.pick + 1});
+  });
+  tb.querySelectorAll('button[data-del]').forEach(el => el.onclick = () => {
+    cps.splice(+el.dataset.del, 1); renderTable();
+  });
+  tb.querySelectorAll('button[data-geobtn]').forEach(el => el.onclick = () => geoSearch(+el.dataset.geobtn));
+  tb.querySelectorAll('input[data-geo]').forEach(el => el.onkeydown = ev => {
+    if (ev.key === 'Enter') geoSearch(+el.dataset.geo);
+  });
+  drawOverlay(); refreshStationSelects();
+}
+
+async function geoSearch(i) {
+  const inp = document.querySelector(`input[data-geo="${i}"]`);
+  if (!inp.value.trim()) return;
+  const r = await fetch('/api/geocode?q=' + encodeURIComponent(inp.value.trim()));
+  const res = await r.json();
+  document.querySelectorAll('.geo-results').forEach(e => e.remove());
+  const box = document.createElement('div');
+  box.className = 'geo-results';
+  const rect = inp.getBoundingClientRect();
+  box.style.left = (rect.left + scrollX) + 'px';
+  box.style.top = (rect.bottom + scrollY) + 'px';
+  if (!res.length) box.innerHTML = `<div>${t('geo.none')}</div>`;
+  res.forEach(g => {
+    const d = document.createElement('div');
+    d.textContent = g.name;
+    d.onclick = () => {
+      cps[i].lat = g.lat; cps[i].lon = g.lon;
+      if (!cps[i].name) cps[i].name = inp.value.trim();
+      box.remove(); renderTable();
+    };
+    box.appendChild(d);
+  });
+  document.body.appendChild(box);
+  setTimeout(() => addEventListener('click', () => box.remove(), {once:true}));
+}
+
+$('addCp').onclick = () => {
+  cps.push({name:'', px:Math.round(job.width/2), py:Math.round(job.height/2),
+            lat:null, lon:null, station:false});
+  renderTable();
+};
+
+function buildCalib() {
+  return {
+    map_bbox_px: bbox,
+    control_points: cps.map(c => ({name: c.name || 'landmark', px: c.px,
+                                   py: c.py, lat: c.lat, lon: c.lon})),
+    stations: cps.filter(c => c.station && c.lat != null)
+                 .map(c => ({name: c.name || 'station', px: c.px, py: c.py,
+                             lat: c.lat, lon: c.lon})),
+  };
+}
+
+$('exportCalib').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(buildCalib(), null, 2)],
+                                        {type:'application/json'}));
+  a.download = 'calib.json';
+  a.click();
+};
+$('importCalib').onclick = () => $('calibFile').click();
+$('calibFile').onchange = async () => {
+  const f = $('calibFile').files[0];
+  if (!f) return;
+  const c = JSON.parse(await f.text());
+  const stNames = new Set((c.stations || []).map(s => s.name));
+  cps = (c.control_points || []).map(p => ({...p, station: stNames.has(p.name)}));
+  if (c.map_bbox_px) bbox = c.map_bbox_px;
+  renderTable();
+};
+
+function refreshStationSelects() {
+  for (const sel of [$('selStart'), $('selEnd')]) {
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">${t('step3.auto')}</option>`;
+    cps.filter(c => c.station && c.lat != null).forEach(c => {
+      const o = document.createElement('option');
+      o.value = o.textContent = c.name || 'station';
+      sel.appendChild(o);
+    });
+    sel.value = cur;
+  }
+}
+
+// ---------- step 3: solve ----------
+$('solveBtn').onclick = async () => {
+  $('err3').textContent = '';
+  const calib = buildCalib();
+  const bad = calib.control_points.filter(p => p.lat == null || p.lon == null);
+  if (calib.control_points.length < 3) { $('err3').textContent = t('err.needCp'); return; }
+  if (bad.length) { $('err3').textContent = t('err.missing', {names: bad.map(p=>p.name).join(', ')}); return; }
+  $('spinner2').classList.add('on'); $('solveBtn').disabled = true;
+  try {
+    const r = await fetch('/api/solve', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_id: job.job_id, calib,
+        start: $('selStart').value, end: $('selEnd').value,
+        use_osrm: $('useOsrm').checked})});
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    summary = await r.json();
+    showResults();
+    $('results').scrollIntoView({behavior:'smooth'});
+  } catch (e) { $('err3').textContent = e.message; }
+  $('spinner2').classList.remove('on'); $('solveBtn').disabled = false;
+};
+
+// ---------- results ----------
+function showResults() {
+  $('chips').innerHTML =
+    `<span class="chip">${t('chip.courtyards', {n: summary.dots})}</span>` +
+    `<span class="chip">${t('chip.fit', {v: summary.fit_rms_m})}</span>` +
+    `<span class="chip">${t('chip.walk')}</span>`;
+  const tabs = $('tabs');
+  tabs.innerHTML = '';
+  summary.variants.forEach(v => {
+    const b = document.createElement('button');
+    b.textContent = t('v.' + v.key);
+    b.onclick = () => selectVariant(v.key);
+    b.dataset.key = v.key;
+    tabs.appendChild(b);
+  });
+  $('imgOrig').src = summary.base + '/original.png';
+  $('osmFull').href = summary.base + '/routes_map.html';
+  $('mapframe').src = summary.base + '/routes_map.html';
+  const grid = $('fileGrid');
+  grid.innerHTML = '';
+  const icon = f => f.endsWith('.pdf') ? '📕' : f.endsWith('.gpx') ? '🧭'
+             : f.endsWith('.kml') ? '🌍' : f.endsWith('.png') ? '🖼'
+             : f.endsWith('.html') ? '🗺' : f.endsWith('.geojson') ? '🧩' : '📄';
+  for (const f of summary.files) {
+    const n = f.split('/').pop();
+    const a = document.createElement('a');
+    a.href = f;
+    if (!n.endsWith('.html')) a.download = n; else a.target = '_blank';
+    a.innerHTML = `${icon(n)} ${n}`;
+    grid.appendChild(a);
+  }
+  selectVariant(activeKey && summary.variants.some(v => v.key === activeKey)
+                ? activeKey : summary.variants[0].key);
+  $('results').style.display = '';
+}
+
+function selectVariant(key) {
+  activeKey = key;
+  const v = summary.variants.find(x => x.key === key);
+  $('tabs').querySelectorAll('button').forEach(b =>
+    b.classList.toggle('active', b.dataset.key === key));
+  const dist = v.street_km ? t('stat.streets', {km: v.street_km})
+                           : t('stat.bird', {km: v.bird_km});
+  const hours = v.walk_h ? ' · ' + t('stat.hours', {h: v.walk_h}) : '';
+  $('vstat').innerHTML = `${v.name} — ${dist}${hours}`;
+  $('capRoute').textContent = t('cap.route', {name: t('v.' + v.key)});
+  $('imgRoute').src = v.png;
+  $('vactions').innerHTML = `
+    <a href="${v.gmaps}" target="_blank"><button class="primary">${t('act.gmaps')}</button></a>
+    <a href="${summary.base}/routes_map.html" target="_blank"><button>${t('act.osm')}</button></a>
+    <a href="${v.kml}" download><button class="ghost">${t('act.kml')}</button></a>
+    <a href="${v.gpx}" download><button class="ghost">${t('act.gpx')}</button></a>
+    <a href="${v.pdf}" target="_blank"><button class="ghost">${t('act.pdf')}</button></a>`;
+}
+
+loadLang();
+</script>
+</body>
+</html>

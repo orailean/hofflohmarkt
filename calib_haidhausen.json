@@ -1,0 +1,14 @@
+{
+  "comment": "Calibration for hofflohmaerkte-haidhausen map PDF at 300 dpi. Control points = U/S-Bahn station icons detected by color in the map image, matched to OSM coordinates.",
+  "map_bbox_px": [400, 1050, 2430, 2780],
+  "control_points": [
+    {"name": "Max-Weber-Platz (U)", "px": 947.9, "py": 979.9, "lat": 48.1356629, "lon": 11.5978963},
+    {"name": "Rosenheimer Platz (S)", "px": 755.2, "py": 2240.2, "lat": 48.1287584, "lon": 11.5938184},
+    {"name": "Ostbahnhof (S)", "px": 1961.3, "py": 2242.2, "lat": 48.1280775, "lon": 11.6036296}
+  ],
+  "stations": [
+    {"name": "Max-Weber-Platz (U)", "px": 947.9, "py": 979.9, "lat": 48.1356629, "lon": 11.5978963},
+    {"name": "Rosenheimer Platz (S)", "px": 755.2, "py": 2240.2, "lat": 48.1287584, "lon": 11.5938184},
+    {"name": "Ostbahnhof (S/U)", "px": 1961.3, "py": 2242.2, "lat": 48.1280775, "lon": 11.6036296}
+  ]
+}

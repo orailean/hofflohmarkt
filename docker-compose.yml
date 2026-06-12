@@ -1,0 +1,29 @@
+services:
+  hoffroute:
+    build:
+      context: .
+      target: runner
+    image: hoffroute:${IMAGE_TAG:-latest}
+    ports:
+      - "${PORT:-8000}:${APP_PORT:-8000}"
+    environment:
+      HOFFROUTE_JOBS_DIR: /data/jobs
+      APP_PORT: ${APP_PORT:-8000}
+    volumes:
+      - jobs:/data/jobs
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  jobs:
