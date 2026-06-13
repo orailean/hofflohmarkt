@@ -70,7 +70,7 @@ def render_page(pdf_path, dpi):
     return doc, img[..., :3].astype(int)
 
 
-def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=4.0):
+def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6.0):
     """Detect pink/red market dots inside bbox; split touching clusters.
     Any dot whose nearest neighbour is more than isolation_factor × the median
     nearest-neighbour distance is dropped as a legend/decoration dot."""
@@ -463,17 +463,26 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     shape.draw_polyline(pts)
     shape.finish(color=(0.11, 0.46, 0.84), width=2.2, lineJoin=1, lineCap=1,
                  stroke_opacity=0.8)
-    # start / end markers (a closed tour gets a single start marker)
-    shape.draw_circle(pts[0], 7)
-    shape.finish(color=(1, 1, 1), fill=(0.13, 0.55, 0.13), width=1.5)
-    if not closed:
-        shape.draw_circle(pts[-1], 7)
-        shape.finish(color=(1, 1, 1), fill=(0.80, 0.10, 0.10), width=1.5)
     shape.commit()
 
-    page.insert_text(pts[0] + (-4, 2.6), "S", fontsize=8, color=(1, 1, 1))
+    # Flag markers: vertical pole with a filled triangle pennant at the top.
+    # Green flag = start, red flag = end (omitted for closed circular tours).
+    ph, fw, fh = 13, 9, 6  # pole height, flag width, flag height (PDF points)
+
+    def draw_flag(pt, fill):
+        top = fitz.Point(pt.x, pt.y - ph)
+        mid = fitz.Point(pt.x + fw, pt.y - ph + fh / 2)
+        bot = fitz.Point(pt.x, pt.y - ph + fh)
+        sh = page.new_shape()
+        sh.draw_line(pt, top)
+        sh.finish(color=(0.15, 0.15, 0.15), width=1.2)
+        sh.draw_polyline([top, mid, bot, top])
+        sh.finish(fill=fill, color=fill, width=0.3)
+        sh.commit()
+
+    draw_flag(pts[0], (0.13, 0.55, 0.13))
     if not closed:
-        page.insert_text(pts[-1] + (-4, 2.6), "Z", fontsize=8, color=(1, 1, 1))
+        draw_flag(pts[-1], (0.80, 0.10, 0.10))
 
     # stop numbers (skip start/end stations)
     for i, p in enumerate(pts[1:-1], start=1):
