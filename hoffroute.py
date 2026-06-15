@@ -94,6 +94,22 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6
         pts.append((float(px[i]), float(py[i])))
 
     if len(pts) > 2:
+        # Label pink blobs once for size-based logo detection.
+        # Market dots are tiny circles (~200–800 px²); logo artwork (e.g. a
+        # city-crest castle silhouette) is a much larger connected pink blob.
+        _blob_lab, _n_blobs = ndimage.label(mask)
+        _blob_sizes = (np.bincount(_blob_lab.ravel())[1:]
+                       if _n_blobs > 0 else np.array([]))
+
+        def is_logo_blob(p):
+            """True when the pink blob at this position is far too large to be
+            a market dot (threshold: 2500 px² at detect dpi)."""
+            x, y = int(p[0]), int(p[1])
+            lbl = int(_blob_lab[y, x])
+            if lbl == 0 or lbl > len(_blob_sizes):
+                return False
+            return int(_blob_sizes[lbl - 1]) > 2500
+
         def looks_like_legend_marker(p):
             x, y = map(int, p)
             y0, y1 = max(0, y - 75), min(mask.shape[0], y + 75)
@@ -120,29 +136,32 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6
             return text_like_components >= 4 and text_like_pixels >= 80
 
         def has_dark_text_nearby(p):
-            """Sponsor logos and attribution blocks carry dense dark text/images.
-            Use a tighter patch so street labels (sparse, 1-2 thin lines) don't
-            trigger, but logo blocks (large bold text + images) always do.
-            Applied unconditionally — a real market dot is never inside a logo."""
+            """Sponsor logos have dense dark text around them. Uses a broad
+            luminance check (avg RGB < 100) to catch dark-maroon logo text
+            (e.g. 'STADT WÜRZBURG') not just pure black. Applied
+            unconditionally — a real market dot is never inside a logo."""
             x, y = int(p[0]), int(p[1])
-            y0d = max(0, y - 80)
-            y1d = min(img.shape[0], y + 80)
-            x0d = max(0, x - 120)
-            x1d = min(img.shape[1], x + 120)
+            y0d = max(0, y - 140)
+            y1d = min(img.shape[0], y + 140)
+            x0d = max(0, x - 200)
+            x1d = min(img.shape[1], x + 200)
             patch = img[y0d:y1d, x0d:x1d]
-            dark = ((patch[..., 0] < 70) & (patch[..., 1] < 70) &
-                    (patch[..., 2] < 70))
-            return int(dark.sum()) > 2000
+            # avg < 100 catches pure black, dark grey, and dark-saturated colors
+            avg = patch.mean(axis=2)
+            # exclude pink market-dot pixels so they don't inflate the count
+            is_pink = ((patch[..., 0] > 150) & (patch[..., 1] < 90) &
+                       (patch[..., 2] > 50))
+            dark = (avg < 100) & ~is_pink
+            return int(dark.sum()) > 4000
 
         arr = np.array(pts)
         d = np.sqrt(((arr[:, None] - arr[None, :]) ** 2).sum(axis=2))
         np.fill_diagonal(d, np.inf)
         nn = d.min(axis=1)
         threshold = isolation_factor * float(np.median(nn))
-        # Dark-text check is unconditional: a real market dot is never placed
-        # inside a logo/sponsor block regardless of whether it has neighbors.
         pts = [p for p, nd in zip(pts, nn)
-               if not has_dark_text_nearby(p) and
+               if not is_logo_blob(p) and
+               not has_dark_text_nearby(p) and
                (nd <= threshold or not looks_like_legend_marker(p))]
 
     return pts

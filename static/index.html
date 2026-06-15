@@ -223,7 +223,7 @@
   <div class="card" id="step3" style="display:none">
     <div class="step"><div class="n">3</div><h2 data-i18n="step3.title"></h2></div>
     <div class="row">
-      <label><input type="checkbox" id="useOsrm" checked> <span data-i18n="step3.osrm"></span></label>
+      <label data-i18n-title="step3.osrmTip"><input type="checkbox" id="useOsrm" checked> <span data-i18n="step3.osrm"></span></label>
       <label id="startLabel"><span data-i18n="step3.start"></span> <select id="selStart"></select></label>
       <label id="endLabel"><span data-i18n="step3.end"></span> <select id="selEnd"></select></label>
       <button id="solveBtn" class="primary" data-i18n="step3.solve"></button>
@@ -297,6 +297,8 @@ function applyStatic() {
     el.placeholder = t(el.dataset.i18nPh);
     el.setAttribute('aria-label', t(el.dataset.i18nPh));
   });
+  document.querySelectorAll('[data-i18n-title]').forEach(el =>
+    el.title = t(el.dataset.i18nTitle));
 }
 
 async function loadLang() {
@@ -335,6 +337,17 @@ async function checkAuth() {
   updateManualAccess();
 }
 
+function renumberSteps() {
+  let num = 1;
+  for (const id of ['step1', 'step2', 'step3', 'results']) {
+    const el = $(id);
+    if (!el || el.style.display === 'none') continue;
+    const badge = el.querySelector('.n');
+    if (badge) badge.textContent = num;
+    num++;
+  }
+}
+
 function updateManualAccess() {
   const showLogin = auth.manual_enabled && !auth.authenticated;
   const showStatus = auth.manual_enabled && auth.authenticated;
@@ -348,6 +361,7 @@ function updateManualAccess() {
   } else {
     $('step2').style.display = 'none';
   }
+  renumberSteps();
   refreshStationSelects();
 }
 
@@ -413,6 +427,7 @@ function initCalibration() {
   $('step3').style.display = '';
   $('results').style.display = 'none';
   updateManualAccess();
+  renumberSteps();
   renderTable();
 }
 
@@ -647,7 +662,7 @@ function showResults() {
   const hasGPS = summary.fit_rms_m !== null;
   $('chips').innerHTML =
     `<span class="chip">${t('chip.courtyards', {n: summary.dots})}</span>` +
-    (hasGPS ? `<span class="chip">${t('chip.fit', {v: summary.fit_rms_m})}</span>` : '') +
+    (hasGPS ? `<span class="chip" title="${t('chip.fitTip', {v: summary.fit_rms_m})}">${t('chip.fit', {v: summary.fit_rms_m})}</span>` : '') +
     `<span class="chip">${t('chip.walk')}</span>`;
   const tabs = $('tabs');
   tabs.innerHTML = '';
@@ -700,6 +715,7 @@ function showResults() {
   selectVariant(activeKey && summary.variants.some(v => v.key === activeKey)
                 ? activeKey : summary.variants[0].key);
   $('results').style.display = '';
+  renumberSteps();
 }
 
 function selectVariant(key) {
