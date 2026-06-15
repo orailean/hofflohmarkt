@@ -17,8 +17,12 @@ FROM base AS runner
 COPY --from=builder /install /usr/local
 COPY --chown=appuser:appgroup hoffroute.py webapp.py ./
 COPY --chown=appuser:appgroup static/ static/
-RUN mkdir -p /data/jobs && chown appuser:appgroup /data/jobs
+RUN mkdir -p /data/jobs /data/calibration_cache /data/route_cache /data/logs \
+    && chown -R appuser:appgroup /data
 ENV HOFFROUTE_JOBS_DIR=/data/jobs \
+    HOFFROUTE_CALIB_CACHE_DIR=/data/calibration_cache \
+    HOFFROUTE_ROUTE_CACHE_DIR=/data/route_cache \
+    HOFFROUTE_LOG_FILE=/data/logs/hoffroute.log \
     APP_PORT=8000
 USER appuser
 # EXPOSE is documentation only; the actual port follows APP_PORT
