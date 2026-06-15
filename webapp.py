@@ -1036,120 +1036,156 @@ def prepare_status(job_id: str):
     return result
 
 
+def _run_solve(jid: str, payload: dict, auth_user: str | None):
+    d = JOBS_DIR / jid
+    solve_path = d / "solve_result.json"
+
+    def _fail(detail: str):
+        try:
+            solve_path.write_text(json.dumps({"status": "error", "detail": detail}))
+        except Exception:
+            pass
+
+    try:
+        meta = read_json(d / "meta.json") or {}
+        pdf_hash = meta.get("pdf_hash")
+
+        submitted_calib = payload.get("calib") or None
+        calib = validate_calib(submitted_calib)
+        calib_source = f"manual:{auth_user}" if calib is not None else None
+        if calib is None:
+            calib = validate_calib(read_json(d / "calib.json"), strict=False)
+            calib_source = "job" if calib is not None else None
+        if calib is None and pdf_hash:
+            calib = load_cached_calib(pdf_hash)
+            calib_source = "cache" if calib is not None else None
+        LOGGER.info(
+            "solve calibration source job_id=%s source=%s control_points=%d stations=%d",
+            jid, calib_source or "none",
+            len(calib.get("control_points", [])) if calib else 0,
+            len(calib.get("stations", [])) if calib else 0)
+
+        pdfs = [p for p in d.glob("*.pdf") if not p.name.startswith("route_")]
+        if not pdfs:
+            _fail("job has no PDF")
+            return
+
+        out = d / "out"
+        rcache = route_cache_dir(pdf_hash, calib)
+
+        def build_response(raw_summary, log_lines):
+            base = f"/jobs/{jid}/out"
+            raw_summary["log"] = log_lines
+            raw_summary["base"] = base
+            raw_summary["files"] = [f"{base}/{f}" for f in raw_summary["files"]]
+            for v in raw_summary["variants"]:
+                v["pdf"] = f"{base}/{v['pdf']}"
+                v["png"] = f"{base}/{v['png']}"
+                if v.get("gpx"):
+                    v["gpx"] = f"{base}/{v['gpx']}"
+                if v.get("kml"):
+                    v["kml"] = f"{base}/{v['kml']}"
+            return raw_summary
+
+        # --- route cache hit ---
+        raw_cache_path = rcache / "raw_summary.json" if rcache else None
+        if raw_cache_path and raw_cache_path.is_file():
+            LOGGER.info("solve route cache hit job_id=%s key=%s", jid, rcache.name)
+            shutil.rmtree(out, ignore_errors=True)
+            shutil.copytree(rcache, out,
+                            ignore=shutil.ignore_patterns("raw_summary.json"),
+                            dirs_exist_ok=True)
+            raw = read_json(raw_cache_path)
+            summary = build_response(raw, ["(Ergebnis aus Cache geladen / served from route cache)"])
+            LOGGER.info(
+                "solve complete (cached) job_id=%s variants=%d files=%d",
+                jid, len(summary["variants"]), len(summary["files"]))
+            summary["status"] = "ready"
+            solve_path.write_text(json.dumps(summary, ensure_ascii=False))
+            return
+
+        # --- compute ---
+        shutil.rmtree(out, ignore_errors=True)
+        log_lines = []
+
+        def pipeline_log(message):
+            log_lines.append(message)
+            LOGGER.info("pipeline job_id=%s %s", jid, message)
+
+        try:
+            summary = hr.run_pipeline(
+                pdfs[0], calib, out, dpi=RENDER_DPI,
+                start=payload.get("start") or None,
+                end=payload.get("end") or None,
+                use_osrm=bool(payload.get("use_osrm", True)),
+                log=pipeline_log,
+                resolve_stations=transit_stations_from_icons)
+        except Exception as e:
+            LOGGER.exception("solve pipeline failed job_id=%s error=%s", jid, e)
+            _fail(f"pipeline failed: {e}")
+            return
+
+        if calib:
+            calib_json = json.dumps(calib, indent=2, ensure_ascii=False)
+            (d / "calib.json").write_text(calib_json)
+            if pdf_hash:
+                cache_path(pdf_hash).write_text(calib_json)
+                LOGGER.info(
+                    "solve saved calibration cache job_id=%s hash=%s source=%s",
+                    jid, pdf_hash, calib_source or "unknown")
+
+        if rcache:
+            try:
+                rcache.mkdir(parents=True, exist_ok=True)
+                for f in out.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, rcache / f.name)
+                (rcache / "raw_summary.json").write_text(
+                    json.dumps({k: v for k, v in summary.items() if k != "log"},
+                               indent=2, ensure_ascii=False))
+                LOGGER.info("solve route cache saved key=%s", rcache.name)
+            except Exception as e:
+                LOGGER.warning("solve route cache save failed: %s", e)
+
+        summary = build_response(summary, log_lines)
+        LOGGER.info(
+            "solve complete job_id=%s variants=%d files=%d",
+            jid, len(summary["variants"]), len(summary["files"]))
+        summary["status"] = "ready"
+        solve_path.write_text(json.dumps(summary, ensure_ascii=False))
+    except Exception as e:
+        LOGGER.exception("solve failed job_id=%s error=%s", jid, e)
+        _fail(f"failed: {e}")
+
+
 @app.post("/api/solve")
 def solve(payload: dict, request: Request):
-    d = job_dir(payload.get("job_id", ""))
-    meta = read_json(d / "meta.json") or {}
-    pdf_hash = meta.get("pdf_hash")
+    jid = payload.get("job_id", "")
+    d = job_dir(jid)
     auth_user = auth_user_from_request(request)
     submitted_calib = payload.get("calib") or None
     if submitted_calib is not None and auth_user is None:
         LOGGER.warning(
-            "solve rejected unauthorized manual calibration job_id=%s",
-            d.name)
+            "solve rejected unauthorized manual calibration job_id=%s", jid)
         raise HTTPException(403, "login required for manual calibration")
+    meta = read_json(d / "meta.json") or {}
     LOGGER.info(
         "solve start job_id=%s pdf_hash=%s use_osrm=%s start=%r end=%r",
-        d.name, pdf_hash, bool(payload.get("use_osrm", True)),
+        jid, meta.get("pdf_hash"), bool(payload.get("use_osrm", True)),
         payload.get("start") or None, payload.get("end") or None)
-    calib = validate_calib(submitted_calib)
-    calib_source = f"manual:{auth_user}" if calib is not None else None
-    if calib is None:
-        calib = validate_calib(read_json(d / "calib.json"), strict=False)
-        calib_source = "job" if calib is not None else None
-    if calib is None and pdf_hash:
-        calib = load_cached_calib(pdf_hash)
-        calib_source = "cache" if calib is not None else None
-    LOGGER.info(
-        "solve calibration source job_id=%s source=%s control_points=%d stations=%d",
-        d.name, calib_source or "none",
-        len(calib.get("control_points", [])) if calib else 0,
-        len(calib.get("stations", [])) if calib else 0)
+    # Remove any previous solve result so the status endpoint doesn't return stale data
+    (d / "solve_result.json").unlink(missing_ok=True)
+    _prepare_executor.submit(_run_solve, jid, payload, auth_user)
+    return {"status": "processing"}
 
-    pdfs = [p for p in d.glob("*.pdf") if not p.name.startswith("route_")]
-    if not pdfs:
-        raise HTTPException(404, "job has no PDF")
 
-    out = d / "out"
-    rcache = route_cache_dir(pdf_hash, calib)
-
-    def build_response(raw_summary, log_lines):
-        base = f"/jobs/{d.name}/out"
-        raw_summary["log"] = log_lines
-        raw_summary["base"] = base
-        raw_summary["files"] = [f"{base}/{f}" for f in raw_summary["files"]]
-        for v in raw_summary["variants"]:
-            v["pdf"] = f"{base}/{v['pdf']}"
-            v["png"] = f"{base}/{v['png']}"
-            if v.get("gpx"):
-                v["gpx"] = f"{base}/{v['gpx']}"
-            if v.get("kml"):
-                v["kml"] = f"{base}/{v['kml']}"
-        return raw_summary
-
-    # --- route cache hit ---
-    raw_cache_path = rcache / "raw_summary.json" if rcache else None
-    if raw_cache_path and raw_cache_path.is_file():
-        LOGGER.info(
-            "solve route cache hit job_id=%s key=%s", d.name, rcache.name)
-        shutil.rmtree(out, ignore_errors=True)
-        shutil.copytree(rcache, out,
-                        ignore=shutil.ignore_patterns("raw_summary.json"),
-                        dirs_exist_ok=True)
-        raw = read_json(raw_cache_path)
-        summary = build_response(raw, ["(Ergebnis aus Cache geladen / served from route cache)"])
-        LOGGER.info(
-            "solve complete (cached) job_id=%s variants=%d files=%d",
-            d.name, len(summary["variants"]), len(summary["files"]))
-        return JSONResponse(summary)
-
-    # --- compute ---
-    shutil.rmtree(out, ignore_errors=True)
-    log_lines = []
-    def pipeline_log(message):
-        log_lines.append(message)
-        LOGGER.info("pipeline job_id=%s %s", d.name, message)
-
-    try:
-        summary = hr.run_pipeline(
-            pdfs[0], calib, out, dpi=RENDER_DPI,
-            start=payload.get("start") or None,
-            end=payload.get("end") or None,
-            use_osrm=bool(payload.get("use_osrm", True)),
-            log=pipeline_log,
-            resolve_stations=transit_stations_from_icons)
-    except Exception as e:
-        LOGGER.exception("solve pipeline failed job_id=%s error=%s", d.name, e)
-        raise HTTPException(422, f"pipeline failed: {e}")
-
-    if calib:
-        calib_json = json.dumps(calib, indent=2, ensure_ascii=False)
-        (d / "calib.json").write_text(calib_json)
-        if pdf_hash:
-            cache_path(pdf_hash).write_text(calib_json)
-            LOGGER.info(
-                "solve saved calibration cache job_id=%s hash=%s source=%s",
-                d.name, pdf_hash, calib_source or "unknown")
-
-    # --- save to route cache (before path adjustment) ---
-    if rcache:
-        try:
-            rcache.mkdir(parents=True, exist_ok=True)
-            for f in out.iterdir():
-                if f.is_file():
-                    shutil.copy2(f, rcache / f.name)
-            (rcache / "raw_summary.json").write_text(
-                json.dumps({k: v for k, v in summary.items() if k != "log"},
-                           indent=2, ensure_ascii=False))
-            LOGGER.info("solve route cache saved key=%s", rcache.name)
-        except Exception as e:
-            LOGGER.warning("solve route cache save failed: %s", e)
-
-    summary = build_response(summary, log_lines)
-    LOGGER.info(
-        "solve complete job_id=%s variants=%d files=%d",
-        d.name, len(summary["variants"]), len(summary["files"]))
-    return JSONResponse(summary)
+@app.get("/api/solve/{job_id}/status")
+def solve_status(job_id: str):
+    d = job_dir(job_id)
+    result = read_json(d / "solve_result.json")
+    if result is None:
+        return {"status": "processing"}
+    return result
 
 
 @app.get("/api/geocode")
