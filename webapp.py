@@ -32,6 +32,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from loguru import logger
+
 from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -85,14 +87,78 @@ AUTH_COOKIE_SECURE = os.environ.get(
     "HOFFROUTE_AUTH_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
 AUTH_SECRET = os.environ.get("HOFFROUTE_AUTH_SECRET") or secrets.token_urlsafe(32)
 
-LOGGER = logging.getLogger("hoffroute.webapp")
-LOGGER.setLevel(os.environ.get("HOFFROUTE_LOG_LEVEL", "INFO").upper())
-if not LOGGER.handlers:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s [%(name)s] %(message)s"))
-    LOGGER.addHandler(handler)
-LOGGER.propagate = False
+# ---------- logging (loguru) ----------
+_LOG_LEVEL = os.environ.get("HOFFROUTE_LOG_LEVEL", "INFO").upper()
+_LOG_FILE = os.environ.get("HOFFROUTE_LOG_FILE", "logs/hoffroute.log")
+_LOG_MAX_BYTES = int(os.environ.get("HOFFROUTE_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+_LOG_BACKUP_COUNT = int(os.environ.get("HOFFROUTE_LOG_BACKUP_COUNT", "5"))
+
+_FMT = "{time:YYYY-MM-DD HH:mm:ss,SSS} {level} [{name}] {message}"
+
+# Remove loguru's default stderr sink; replace with stdout.
+logger.remove()
+logger.add(sys.stdout, level=_LOG_LEVEL, format=_FMT, colorize=True)
+
+if _LOG_FILE:
+    _log_path = Path(_LOG_FILE)
+    _log_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.add(
+        _log_path,
+        level=_LOG_LEVEL,
+        format=_FMT,
+        rotation=_LOG_MAX_BYTES,
+        retention=_LOG_BACKUP_COUNT,
+        compression="gz",
+        encoding="utf-8",
+    )
+    logger.info("file logging enabled path={} max_bytes={} backups={}",
+                _log_path.resolve(), _LOG_MAX_BYTES, _LOG_BACKUP_COUNT)
+
+
+class _InterceptHandler(logging.Handler):
+    """Forward stdlib logging (uvicorn, fastapi, …) into loguru."""
+    def emit(self, record: logging.LogRecord):
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame, depth = sys._getframe(6), 6
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage())
+
+
+logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
+
+
+class _Logger:
+    """Thin shim: existing LOGGER.info("msg %s", val) calls work unchanged.
+    Converts %-style format strings to plain strings before passing to loguru,
+    so no call sites need updating."""
+
+    @staticmethod
+    def _fmt(msg, args):
+        try:
+            return msg % args if args else str(msg)
+        except Exception:
+            return str(msg)
+
+    def info(self, msg, *args):
+        logger.opt(depth=1).info(self._fmt(msg, args))
+
+    def warning(self, msg, *args):
+        logger.opt(depth=1).warning(self._fmt(msg, args))
+
+    def debug(self, msg, *args):
+        logger.opt(depth=1).debug(self._fmt(msg, args))
+
+    def exception(self, msg, *args):
+        logger.opt(depth=1, exception=True).error(self._fmt(msg, args))
+
+
+LOGGER = _Logger()
 
 app = FastAPI(title="hoffroute")
 

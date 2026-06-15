@@ -15,7 +15,6 @@ __pycache__/
 
 # local tooling
 .claude/
-.DS_Store
 
 # vscode
 .vscode/
@@ -28,3 +27,6 @@ __pycache__/
 
 # route cache
 route_cache/
+
+# logs
+logs/
