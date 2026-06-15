@@ -59,6 +59,9 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 CALIB_CACHE_DIR = Path(os.environ.get(
     "HOFFROUTE_CALIB_CACHE_DIR", "calibration_cache")).resolve()
 CALIB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+ROUTE_CACHE_DIR = Path(os.environ.get(
+    "HOFFROUTE_ROUTE_CACHE_DIR", "route_cache")).resolve()
+ROUTE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PDF_BYTES = 50 * 1024 * 1024
 RENDER_DPI = 300
 AUTOCALIB_CONTEXT = os.environ.get(
@@ -206,6 +209,20 @@ def cache_path(pdf_hash: str) -> Path:
     return CALIB_CACHE_DIR / f"{pdf_hash}.json"
 
 
+def calib_content_hash(calib) -> str:
+    if not calib:
+        return "nocal"
+    stable = json.dumps(calib, sort_keys=True, ensure_ascii=False,
+                        separators=(",", ":"))
+    return hashlib.sha256(stable.encode()).hexdigest()[:20]
+
+
+def route_cache_dir(pdf_hash: str | None, calib) -> Path | None:
+    if not pdf_hash:
+        return None
+    return ROUTE_CACHE_DIR / f"{pdf_hash[:20]}_{calib_content_hash(calib)}"
+
+
 def read_json(path: Path):
     try:
         return json.loads(path.read_text())
@@ -279,13 +296,13 @@ def clean_ocr_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip(" -.,;:|")
 
 
-def run_tesseract_tsv(image_path: Path, lang: str):
+def run_tesseract_tsv(image_path: Path, lang: str, psm: str = "11"):
     cmd = [
         TESSERACT_CMD,
         "stdin",
         "stdout",
         "-l", lang,
-        "--psm", "11",
+        "--psm", psm,
         "tsv",
     ]
     with image_path.open("rb") as img:
@@ -294,40 +311,8 @@ def run_tesseract_tsv(image_path: Path, lang: str):
             timeout=45)
 
 
-def extract_ocr_text_lines(image_path: Path):
-    if not TESSERACT_CMD:
-        LOGGER.info("auto-calibration OCR skipped: tesseract not found")
-        return []
-    LOGGER.info(
-        "auto-calibration OCR starting image=%s cmd=%s lang=%s",
-        image_path, TESSERACT_CMD, TESSERACT_LANG)
-    langs = [TESSERACT_LANG]
-    if TESSERACT_LANG != "eng":
-        langs.append("eng")
-    proc = None
-    try:
-        for lang in langs:
-            try:
-                proc = run_tesseract_tsv(image_path, lang)
-                break
-            except subprocess.CalledProcessError as e:
-                stderr = e.stderr.decode("utf-8", errors="replace").strip()
-                LOGGER.warning(
-                    "auto-calibration OCR failed lang=%s error=%s",
-                    lang, stderr or e)
-                if lang == langs[-1]:
-                    return []
-    except subprocess.TimeoutExpired:
-        LOGGER.warning("auto-calibration OCR timed out after 45s")
-        return []
-    except Exception as e:
-        LOGGER.warning("auto-calibration OCR failed error=%s", e)
-        return []
-    if proc is None:
-        return []
-
+def _parse_tsv_lines(stdout: str) -> list:
     rows = {}
-    stdout = proc.stdout.decode("utf-8", errors="replace")
     for raw in stdout.splitlines()[1:]:
         parts = raw.split("\t")
         if len(parts) < 12:
@@ -342,6 +327,7 @@ def extract_ocr_text_lines(image_path: Path):
         text = clean_ocr_text(parts[11])
         if level != 5 or conf < 35 or not text:
             continue
+        # namespace key by PSM prefix to avoid merging blocks from different runs
         key = tuple(parts[1:5])
         rows.setdefault(key, []).append((left, top, width, height, text))
 
@@ -361,6 +347,55 @@ def extract_ocr_text_lines(image_path: Path):
             "py": round((y0 + y1) / 2, 1),
             "source": "ocr",
         })
+    return lines
+
+
+def extract_ocr_text_lines(image_path: Path):
+    if not TESSERACT_CMD:
+        LOGGER.info("auto-calibration OCR skipped: tesseract not found")
+        return []
+    LOGGER.info(
+        "auto-calibration OCR starting image=%s cmd=%s lang=%s",
+        image_path, TESSERACT_CMD, TESSERACT_LANG)
+    langs = [TESSERACT_LANG]
+    if TESSERACT_LANG != "eng":
+        langs.append("eng")
+
+    best_proc = None
+    for lang in langs:
+        try:
+            best_proc = run_tesseract_tsv(image_path, lang, psm="11")
+            break
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode("utf-8", errors="replace").strip()
+            LOGGER.warning(
+                "auto-calibration OCR failed lang=%s psm=11 error=%s",
+                lang, stderr or e)
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("auto-calibration OCR timed out (psm=11)")
+        except Exception as e:
+            LOGGER.warning("auto-calibration OCR failed psm=11 error=%s", e)
+
+    if best_proc is None:
+        return []
+
+    lines = _parse_tsv_lines(best_proc.stdout.decode("utf-8", errors="replace"))
+
+    # Second pass with PSM 6 (uniform block) to catch structured text that
+    # PSM 11 (sparse) misses — e.g. map labels in regular grid areas.
+    try:
+        lang6 = langs[0]
+        proc6 = run_tesseract_tsv(image_path, lang6, psm="6")
+        extra = _parse_tsv_lines(proc6.stdout.decode("utf-8", errors="replace"))
+        seen = {normalized_label(ln["text"]) for ln in lines}
+        for ln in extra:
+            if normalized_label(ln["text"]) not in seen:
+                lines.append(ln)
+                seen.add(normalized_label(ln["text"]))
+        LOGGER.info("auto-calibration OCR psm=6 added %d extra lines", len(extra))
+    except Exception as e:
+        LOGGER.debug("auto-calibration OCR psm=6 skipped: %s", e)
+
     LOGGER.info("auto-calibration OCR extracted_text_lines=%d", len(lines))
     return lines
 
@@ -445,14 +480,62 @@ def detect_autocalib_context(pdf: Path, lines):
 
 def looks_like_map_label(text: str) -> bool:
     label = normalized_label(clean_map_label(text))
-    if len(label) < 5 or len(label) > 45:
+    if len(label) < 4 or len(label) > 50:
         return False
-    if label.startswith(("an der ", "am ", "auf dem ", "im ")):
+    if label.startswith(("an der ", "am ", "auf dem ", "im ", "in der ",
+                          "zur ", "zum ", "beim ")):
         return True
     suffixes = (
-        "strasse", "str", "platz", "weg", "gasse", "ring", "allee", "ufer",
-        "bruecke", "brucke", "markt", "bahnhof", "tor", "park", "flora")
-    return any(part.endswith(suffixes) for part in label.split())
+        "strasse", "str",
+        "platz", "pl",
+        "weg", "w",
+        "gasse",
+        "ring",
+        "allee",
+        "ufer",
+        "bruecke", "brucke",
+        "markt",
+        "bahnhof",
+        "tor",
+        "park",
+        "flora",
+        "berg",
+        "graben",
+        "garten",
+        "feld",
+        "stieg",
+        "steig",
+        "grund",
+        "hoehe", "hohe",
+    )
+    parts = label.split()
+    return any(part.endswith(suffixes) for part in parts)
+
+
+def extract_street_tokens(text: str) -> str:
+    """Extract the likely street-name tokens from a garbled OCR line.
+    Finds the last word group (1-2 words) ending with a known street suffix,
+    so 'pe oder Garten POTTENDORFER STR' → 'POTTENDORFER STR'."""
+    cleaned = clean_map_label(text)
+    words = cleaned.split()
+    suffixes = (
+        "strasse", "str", "platz", "pl", "weg", "w", "gasse", "ring",
+        "allee", "ufer", "bruecke", "brucke", "markt", "bahnhof", "tor",
+        "park", "flora", "berg", "graben", "garten", "feld", "stieg",
+        "steig", "grund", "hoehe", "hohe",
+    )
+    for i in range(len(words) - 1, -1, -1):
+        norm = normalized_label(words[i])
+        if any(norm.endswith(s) for s in suffixes):
+            # include 1 preceding word as a street modifier, but skip numbers
+            if i > 0 and not re.match(r"^\d+$", words[i - 1]):
+                start = i - 1
+            else:
+                start = i
+            candidate = " ".join(words[start:i + 1])
+            if len(normalized_label(candidate)) >= 4:
+                return candidate
+    return cleaned
 
 
 def map_label_candidates(lines, icons):
@@ -460,7 +543,7 @@ def map_label_candidates(lines, icons):
     for line in lines:
         if looks_like_map_label(line["text"]):
             items.append({
-                "name": clean_map_label(line["text"]),
+                "name": extract_street_tokens(line["text"]),
                 "px": line["px"],
                 "py": line["py"],
             })
@@ -884,6 +967,39 @@ def solve(payload: dict, request: Request):
         raise HTTPException(404, "job has no PDF")
 
     out = d / "out"
+    rcache = route_cache_dir(pdf_hash, calib)
+
+    def build_response(raw_summary, log_lines):
+        base = f"/jobs/{d.name}/out"
+        raw_summary["log"] = log_lines
+        raw_summary["base"] = base
+        raw_summary["files"] = [f"{base}/{f}" for f in raw_summary["files"]]
+        for v in raw_summary["variants"]:
+            v["pdf"] = f"{base}/{v['pdf']}"
+            v["png"] = f"{base}/{v['png']}"
+            if v.get("gpx"):
+                v["gpx"] = f"{base}/{v['gpx']}"
+            if v.get("kml"):
+                v["kml"] = f"{base}/{v['kml']}"
+        return raw_summary
+
+    # --- route cache hit ---
+    raw_cache_path = rcache / "raw_summary.json" if rcache else None
+    if raw_cache_path and raw_cache_path.is_file():
+        LOGGER.info(
+            "solve route cache hit job_id=%s key=%s", d.name, rcache.name)
+        shutil.rmtree(out, ignore_errors=True)
+        shutil.copytree(rcache, out,
+                        ignore=shutil.ignore_patterns("raw_summary.json"),
+                        dirs_exist_ok=True)
+        raw = read_json(raw_cache_path)
+        summary = build_response(raw, ["(Ergebnis aus Cache geladen / served from route cache)"])
+        LOGGER.info(
+            "solve complete (cached) job_id=%s variants=%d files=%d",
+            d.name, len(summary["variants"]), len(summary["files"]))
+        return JSONResponse(summary)
+
+    # --- compute ---
     shutil.rmtree(out, ignore_errors=True)
     log_lines = []
     def pipeline_log(message):
@@ -896,7 +1012,8 @@ def solve(payload: dict, request: Request):
             start=payload.get("start") or None,
             end=payload.get("end") or None,
             use_osrm=bool(payload.get("use_osrm", True)),
-            log=pipeline_log)
+            log=pipeline_log,
+            resolve_stations=transit_stations_from_icons)
     except Exception as e:
         LOGGER.exception("solve pipeline failed job_id=%s error=%s", d.name, e)
         raise HTTPException(422, f"pipeline failed: {e}")
@@ -907,20 +1024,24 @@ def solve(payload: dict, request: Request):
         if pdf_hash:
             cache_path(pdf_hash).write_text(calib_json)
             LOGGER.info(
-                "solve saved calibration cache job_id=%s hash=%s path=%s source=%s",
-                d.name, pdf_hash, cache_path(pdf_hash),
-                calib_source or "unknown")
-    base = f"/jobs/{d.name}/out"
-    summary["log"] = log_lines
-    summary["base"] = base
-    summary["files"] = [f"{base}/{f}" for f in summary["files"]]
-    for v in summary["variants"]:
-        v["pdf"] = f"{base}/{v['pdf']}"
-        v["png"] = f"{base}/{v['png']}"
-        if v.get("gpx"):
-            v["gpx"] = f"{base}/{v['gpx']}"
-        if v.get("kml"):
-            v["kml"] = f"{base}/{v['kml']}"
+                "solve saved calibration cache job_id=%s hash=%s source=%s",
+                d.name, pdf_hash, calib_source or "unknown")
+
+    # --- save to route cache (before path adjustment) ---
+    if rcache:
+        try:
+            rcache.mkdir(parents=True, exist_ok=True)
+            for f in out.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, rcache / f.name)
+            (rcache / "raw_summary.json").write_text(
+                json.dumps({k: v for k, v in summary.items() if k != "log"},
+                           indent=2, ensure_ascii=False))
+            LOGGER.info("solve route cache saved key=%s", rcache.name)
+        except Exception as e:
+            LOGGER.warning("solve route cache save failed: %s", e)
+
+    summary = build_response(summary, log_lines)
     LOGGER.info(
         "solve complete job_id=%s variants=%d files=%d",
         d.name, len(summary["variants"]), len(summary["files"]))

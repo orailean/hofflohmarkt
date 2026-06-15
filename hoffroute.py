@@ -119,13 +119,31 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6
                     text_like_components += 1
             return text_like_components >= 4 and text_like_pixels >= 80
 
+        def has_dark_text_nearby(p):
+            """Sponsor logos and attribution blocks carry dense dark text/images.
+            Use a tighter patch so street labels (sparse, 1-2 thin lines) don't
+            trigger, but logo blocks (large bold text + images) always do.
+            Applied unconditionally — a real market dot is never inside a logo."""
+            x, y = int(p[0]), int(p[1])
+            y0d = max(0, y - 80)
+            y1d = min(img.shape[0], y + 80)
+            x0d = max(0, x - 120)
+            x1d = min(img.shape[1], x + 120)
+            patch = img[y0d:y1d, x0d:x1d]
+            dark = ((patch[..., 0] < 70) & (patch[..., 1] < 70) &
+                    (patch[..., 2] < 70))
+            return int(dark.sum()) > 2000
+
         arr = np.array(pts)
         d = np.sqrt(((arr[:, None] - arr[None, :]) ** 2).sum(axis=2))
         np.fill_diagonal(d, np.inf)
         nn = d.min(axis=1)
         threshold = isolation_factor * float(np.median(nn))
+        # Dark-text check is unconditional: a real market dot is never placed
+        # inside a logo/sponsor block regardless of whether it has neighbors.
         pts = [p for p, nd in zip(pts, nn)
-               if nd <= threshold or not looks_like_legend_marker(p)]
+               if not has_dark_text_nearby(p) and
+               (nd <= threshold or not looks_like_legend_marker(p))]
 
     return pts
 
@@ -544,9 +562,16 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
         page.insert_text(p + (4.2, -3.5), str(i), fontsize=4.3,
                          color=(0.05, 0.25, 0.55),
                          render_mode=0)
-    # title banner
-    page.insert_text(fitz.Point(30, page.rect.height - 14), title,
-                     fontsize=9, color=color)
+    # title banner — full-width white strip at the bottom so the title never
+    # overlaps existing footer text regardless of what the PDF contains there.
+    _ty = page.rect.height - 5
+    _sh = page.new_shape()
+    _sh.draw_rect(fitz.Rect(0, _ty - 13, page.rect.width, page.rect.height))
+    _sh.finish(fill=(1, 1, 1), color=(1, 1, 1), width=0,
+               fill_opacity=1.0, stroke_opacity=0)
+    _sh.commit()
+    page.insert_text(fitz.Point(5, _ty), title,
+                     fontsize=9, color=color, render_mode=0)
     doc.save(out_path)
     doc.close()
 
@@ -574,9 +599,11 @@ def fetch_pdf(src, dest_dir):
 
 
 def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
-                 use_osrm=True, log=print):
+                 use_osrm=True, log=print, resolve_stations=None):
     """Full pipeline on a local PDF. calib is the parsed calibration dict, or
     None to run in pixel-only mode (annotated PDFs only; no GPS exports).
+    resolve_stations: optional callable(icons, control_points) -> station list,
+    used to look up transit station names when calib has no stations.
     Returns a summary dict (dot count, fit rms, per-variant stats, files)."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -594,6 +621,19 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
     log(f"    {len(dots_px)} market dots found")
     if not dots_px:
         raise ValueError("no market dots detected — check map_bbox_px")
+
+    # If calibrated but station names are missing, try to resolve them now.
+    if calibrated and not calib.get("stations") and resolve_stations:
+        _icons = detect_station_icons(img)
+        if _icons:
+            log("    resolving station names from transit data ...")
+            try:
+                _resolved = resolve_stations(_icons, calib["control_points"])
+                if _resolved:
+                    calib = dict(calib, stations=_resolved)
+                    log(f"    {len(_resolved)} station name(s) resolved")
+            except Exception as _e:
+                log(f"    station name resolution failed: {_e}")
 
     # --- 2. node table + distance matrix ---
     if calibrated:
@@ -739,8 +779,21 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         else:
             title_str = f"{v['title']} | {len(dots_px)} Hoefe"
         pdf_out = out / f"route_{v['key']}.pdf"
-        station_labels = ([(s["px"], s["py"], s["name"]) for s in stations]
-                          if calibrated else None)
+        # Label every detected icon. Use the named station from calibration
+        # when one is close (within 30 px); otherwise show a short type
+        # label ("U" or "S").
+        _named = {(s["px"], s["py"]): s["name"] for s in stations} \
+                 if calibrated else {}
+        station_labels = []
+        for kind, x, y in detect_station_icons(img):
+            best_name, best_dist = None, float("inf")
+            for (sx, sy), sname in _named.items():
+                d = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
+                if d < best_dist:
+                    best_dist, best_name = d, sname
+            label = best_name if best_dist < 30 else kind[0]
+            station_labels.append((float(x), float(y), label))
+        station_labels = station_labels or None
         annotate_pdf(pdf_path, pdf_out, order_px, title_str, dpi=dpi,
                      station_labels=station_labels)
         fitz.open(pdf_out)[0].get_pixmap(dpi=110).save(
