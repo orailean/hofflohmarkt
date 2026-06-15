@@ -4,6 +4,8 @@ services:
       context: .
       target: runner
     image: hoffroute:${IMAGE_TAG:-latest}
+    env_file:
+      - .env
     ports:
       - "${PORT:-8000}:${APP_PORT:-8000}"
     environment:

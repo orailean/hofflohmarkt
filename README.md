@@ -20,7 +20,8 @@ the only per-map input is the calibration file (see below).
 ## How it works
 
 1. Renders the PDF page and detects the red/pink market dots by color
-   (touching dots are split via distance-transform peaks).
+   (touching dots are split via distance-transform peaks; isolated courtyards
+   are kept unless they match the magenta legend-marker pattern).
 2. Georeferences pixel positions to GPS coordinates with an affine fit over
    control points from a calibration file (the U/S-Bahn station icons on the
    map, matched to their real-world coordinates).
@@ -58,13 +59,53 @@ uvicorn webapp:app --port 8000
 ```
 
 Open http://localhost:8000 and follow the steps: load the flyer (file upload
-**or paste a URL**), calibrate on the rendered map (detected station icons are
-pre-filled; pick positions by clicking the map, find coordinates with the
-built-in place search, drag-select the map area), then compute. Results show
-the **original flyer and the route-annotated version side by side**, one
-Google Maps link per route, an embedded interactive OpenStreetMap view, and
-a download grid with every artifact. Calibrations can be exported/imported
-as JSON for reuse.
+**or paste a URL**) and compute. Results show the **original flyer and the
+route-annotated version side by side**, one Google Maps link per route, an
+embedded interactive OpenStreetMap view, and a download grid with every
+artifact.
+
+When no cached calibration exists, the web app attempts a best-effort
+auto-calibration while loading the PDF: it extracts embedded PDF text, falls
+back to OCR when Tesseract is available, geocodes likely street and place
+labels with Nominatim, and keeps only points that fit a consistent affine
+transform. U-/S-Bahn icons are not named from nearby street text. Once the map
+is georeferenced, the app looks up named transit stops near those icon
+positions in OpenStreetMap/Overpass and only adds a station when a named
+transit feature is found.
+
+Manual calibration is available only after logging in with a user from
+`HOFFROUTE_MANUAL_USERS`. Authenticated users can edit/import/export the
+calibration, pick positions on the map, and set the map area. When an
+authenticated manual calibration is submitted, it overwrites the reusable
+calibration cache for that PDF hash. Unauthenticated users cannot see the
+manual calibration panel and `/api/solve` rejects manual calibration payloads
+without a valid login cookie.
+
+To remove a cached calibration, log in, open **Calibration**, and click
+**Delete cached calib**. This deletes both the reusable cache file for the
+current PDF hash and the current job's local `calib.json`, then resets the
+manual calibration form. You can also remove cache files directly from
+`HOFFROUTE_CALIB_CACHE_DIR` (`calibration_cache/` by default); files are named
+`<pdf-sha256>.json`.
+
+Calibration-related environment variables:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HOFFROUTE_MANUAL_USERS` | empty | comma-separated `user:password` entries, or a JSON object, allowed to use manual calibration |
+| `HOFFROUTE_AUTH_SECRET` | random per process | secret for signing login cookies; set this in production |
+| `HOFFROUTE_AUTH_TTL_SECONDS` | `43200` | manual-calibration login lifetime |
+| `HOFFROUTE_AUTH_COOKIE_SECURE` | false | set true when serving only over HTTPS |
+| `HOFFROUTE_CALIB_CACHE_DIR` | `calibration_cache/` | where reusable calibrations are stored |
+| `HOFFROUTE_AUTOCALIB_CONTEXT` | `Germany` | fallback geocoding context appended to extracted street/station labels |
+| `HOFFROUTE_AUTOCALIB_MAX_CANDIDATES` | `20` | max labels to geocode during PDF load |
+| `HOFFROUTE_AUTOCALIB_MAX_RMS_M` | `250` | max accepted fit RMS for auto-calibration |
+| `HOFFROUTE_AUTOCALIB_INLIER_M` | `180` | residual threshold for auto-calibration inliers |
+| `HOFFROUTE_AUTOCALIB_TRANSIT_RADIUS_M` | `500` | radius for named U-/S-Bahn lookup after georeferencing |
+| `HOFFROUTE_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass endpoint for transit stop lookup |
+| `HOFFROUTE_TESSERACT_CMD` | auto-detected | optional `tesseract` binary for OCR on bitmap-only flyers |
+| `HOFFROUTE_TESSERACT_LANG` | `deu+eng` | OCR languages; falls back to `eng` if the configured language pack is missing |
+| `HOFFROUTE_LOG_LEVEL` | `INFO` | stdout log level for the web app |
 
 The UI is available in **English, German, and Romanian** — the browser's
 language setting picks the default, and a switcher in the header overrides

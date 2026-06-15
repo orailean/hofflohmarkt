@@ -72,8 +72,9 @@ def render_page(pdf_path, dpi):
 
 def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6.0):
     """Detect pink/red market dots inside bbox; split touching clusters.
-    Any dot whose nearest neighbour is more than isolation_factor × the median
-    nearest-neighbour distance is dropped as a legend/decoration dot."""
+    Very isolated dots are only dropped when they look like the legend marker:
+    a dot surrounded by nearby magenta legend text. This keeps legitimate
+    isolated courtyards on sparse map edges."""
     r, g, b = img[..., 0], img[..., 1], img[..., 2]
     mask = (r > 160) & (g < 80) & (b > 60) & (b < 150)
     box = np.zeros_like(mask)
@@ -93,12 +94,38 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6
         pts.append((float(px[i]), float(py[i])))
 
     if len(pts) > 2:
+        def looks_like_legend_marker(p):
+            x, y = map(int, p)
+            y0, y1 = max(0, y - 75), min(mask.shape[0], y + 75)
+            x0, x1 = max(0, x - 260), min(mask.shape[1], x + 260)
+            region = mask[y0:y1, x0:x1].copy()
+            yy, xx = np.ogrid[y0:y1, x0:x1]
+            # Ignore the marker itself and nearby market dots; legend text is
+            # made of small magenta strokes spread around the marker.
+            region[((xx - x) ** 2 + (yy - y) ** 2) < 42 ** 2] = False
+            lab, n = ndimage.label(region)
+            text_like_pixels = 0
+            text_like_components = 0
+            for k in range(1, n + 1):
+                ys, xs = np.where(lab == k)
+                area = len(xs)
+                if area < 4:
+                    continue
+                w, h = np.ptp(xs) + 1, np.ptp(ys) + 1
+                # Dots are large, roughly round components. Legend letters are
+                # smaller strokes, often narrow or elongated.
+                if area < 180 and (w < 28 or h < 28 or w / max(h, 1) > 1.8):
+                    text_like_pixels += area
+                    text_like_components += 1
+            return text_like_components >= 4 and text_like_pixels >= 80
+
         arr = np.array(pts)
         d = np.sqrt(((arr[:, None] - arr[None, :]) ** 2).sum(axis=2))
         np.fill_diagonal(d, np.inf)
         nn = d.min(axis=1)
         threshold = isolation_factor * float(np.median(nn))
-        pts = [p for p, nd in zip(pts, nn) if nd <= threshold]
+        pts = [p for p, nd in zip(pts, nn)
+               if nd <= threshold or not looks_like_legend_marker(p)]
 
     return pts
 
@@ -451,7 +478,7 @@ map.fitBounds(g0.getLayers()[0].getBounds().pad(0.08));
 
 
 def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.41),
-                 dpi=300):
+                 dpi=300, station_labels=None):
     """Draw the route polyline + stop numbers onto page 0 of the PDF."""
     s = 72.0 / dpi  # px -> pdf points
     doc = fitz.open(src_doc_path)
@@ -483,6 +510,34 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     draw_flag(pts[0], (0.13, 0.55, 0.13))
     if not closed:
         draw_flag(pts[-1], (0.80, 0.10, 0.10))
+
+    # Explicit station labels. The flyer often prints only U/S icons, so draw
+    # the resolved station names onto the annotated output.
+    if station_labels:
+        for x, y, label in station_labels:
+            p = fitz.Point(x * s, y * s)
+            text = str(label)
+            font_size = max(4.2, min(5.1, 108 / max(len(text), 1)))
+            pad_x, pad_y = 1.8, 1.1
+            w = min(128, max(30, len(text) * font_size * 0.48))
+            h = font_size + 2 * pad_y
+            if p.x + 7 + w <= page.rect.width - 2:
+                left = p.x + 5.5
+            else:
+                left = max(2, p.x - w - 5.5)
+            top = min(max(p.y - h - 4, 2), page.rect.height - h - 2)
+            rect = fitz.Rect(left, top, left + w, top + h)
+            sh = page.new_shape()
+            sh.draw_rect(rect)
+            sh.finish(color=(1, 1, 1), fill=(1, 1, 1),
+                      width=0.1, fill_opacity=0.72, stroke_opacity=0)
+            sh.commit()
+            page.insert_text(
+                fitz.Point(rect.x0 + pad_x, rect.y0 + pad_y + font_size),
+                text,
+                fontsize=font_size,
+                color=(0.05, 0.05, 0.05),
+                render_mode=0)
 
     # stop numbers (skip start/end stations)
     for i, p in enumerate(pts[1:-1], start=1):
@@ -684,7 +739,10 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         else:
             title_str = f"{v['title']} | {len(dots_px)} Hoefe"
         pdf_out = out / f"route_{v['key']}.pdf"
-        annotate_pdf(pdf_path, pdf_out, order_px, title_str, dpi=dpi)
+        station_labels = ([(s["px"], s["py"], s["name"]) for s in stations]
+                          if calibrated else None)
+        annotate_pdf(pdf_path, pdf_out, order_px, title_str, dpi=dpi,
+                     station_labels=station_labels)
         fitz.open(pdf_out)[0].get_pixmap(dpi=110).save(
             out / f"route_{v['key']}.png")
 

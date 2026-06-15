@@ -4,6 +4,7 @@
 # generated outputs
 route_out/
 jobs/
+calibration_cache/
 .env
 *_render.png
 calib_template.json

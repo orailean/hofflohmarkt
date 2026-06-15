@@ -20,9 +20,20 @@
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 240'%3E%3Crect width='1200' height='240' fill='%23ece7dc'/%3E%3Cpath d='M-20 200 C 200 150, 380 230, 620 180 S 1050 120, 1240 170' stroke='%23a8c8e8' stroke-width='26' fill='none' opacity='.7'/%3E%3Cg fill='%23cfe3c0' opacity='.8'%3E%3Crect x='150' y='30' width='110' height='70' rx='8'/%3E%3Crect x='760' y='120' width='140' height='80' rx='10'/%3E%3Crect x='1050' y='20' width='90' height='60' rx='8'/%3E%3C/g%3E%3Cg stroke='%23ffffff' stroke-width='10' opacity='.9'%3E%3Cpath d='M0 60 H1200' /%3E%3Cpath d='M0 140 H1200'/%3E%3Cpath d='M100 0 V240'/%3E%3Cpath d='M320 0 V240'/%3E%3Cpath d='M540 0 V240'/%3E%3Cpath d='M700 0 L 800 240'/%3E%3Cpath d='M950 0 V240'/%3E%3C/g%3E%3Cg stroke='%23ffffff' stroke-width='4' opacity='.7'%3E%3Cpath d='M0 100 H1200'/%3E%3Cpath d='M0 195 H1200'/%3E%3Cpath d='M210 0 V240'/%3E%3Cpath d='M430 0 V240'/%3E%3Cpath d='M620 0 L 680 240'/%3E%3Cpath d='M860 0 V240'/%3E%3Cpath d='M1070 0 V240'/%3E%3C/g%3E%3Cg fill='%23e64980'%3E%3Ccircle cx='160' cy='118' r='7'/%3E%3Ccircle cx='245' cy='75' r='7'/%3E%3Ccircle cx='305' cy='160' r='7'/%3E%3Ccircle cx='415' cy='52' r='7'/%3E%3Ccircle cx='475' cy='122' r='7'/%3E%3Ccircle cx='588' cy='86' r='7'/%3E%3Ccircle cx='660' cy='158' r='7'/%3E%3Ccircle cx='745' cy='66' r='7'/%3E%3Ccircle cx='838' cy='108' r='7'/%3E%3Ccircle cx='918' cy='180' r='7'/%3E%3Ccircle cx='1005' cy='84' r='7'/%3E%3Ccircle cx='1110' cy='140' r='7'/%3E%3C/g%3E%3C/svg%3E");
     background-size:cover; background-position:center;
   }
-  header .brand { display:inline-flex; align-items:flex-start; gap:16px;
+  header .brand { display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
     background:rgba(255,255,255,.86); border-radius:14px; padding:12px 18px;
-    box-shadow:var(--shadow); }
+    box-shadow:var(--shadow); max-width:1240px; margin:0 auto; }
+  .brand-main { display:flex; align-items:flex-start; gap:16px; }
+  .header-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  .auth-inline { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+  #loginForm, #loginStatus { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+  .auth-inline input { width:120px; padding:6px 8px; font-size:12.5px; }
+  .auth-inline button { padding:6px 10px; font-size:12.5px; border-radius:8px; }
+  .auth-user { display:inline-flex; align-items:center; gap:4px; padding:5px 9px;
+               border-radius:999px; background:#fff0f6; color:var(--pink-d);
+               font-size:12.5px; font-weight:700; }
+  .auth-user b { color:var(--ink); font-weight:800; }
+  #errAuth { flex-basis:100%; text-align:right; margin:0; }
   header h1 { margin:0; font-size:22px; font-weight:800; letter-spacing:-.3px;
               color:var(--pink-d); }
   header p { margin:3px 0 0; color:var(--mut); font-size:13.5px; }
@@ -39,7 +50,7 @@
   .adv-summary .n { background:var(--violet); }
   .step h2 { margin:0; font-size:16.5px; font-weight:700; }
   .muted { color:var(--mut); font-size:13px; }
-  input[type=text], input[type=number], select {
+  input[type=text], input[type=password], input[type=number], select {
     padding:8px 10px; border:1.5px solid var(--line); border-radius:10px;
     font-size:13.5px; background:#fbfbfc; outline:none; }
   input:focus, select:focus { border-color:var(--violet); }
@@ -128,15 +139,31 @@
 <body>
 <header>
   <div class="brand">
-    <div>
-      <h1>hoffroute</h1>
-      <p data-i18n="tagline"></p>
+    <div class="brand-main">
+      <div>
+        <h1>hoffroute</h1>
+        <p data-i18n="tagline"></p>
+      </div>
+      <select id="langSel" title="Language">
+        <option value="en">EN</option>
+        <option value="de">DE</option>
+        <option value="ro">RO</option>
+      </select>
     </div>
-    <select id="langSel" title="Language">
-      <option value="en">EN</option>
-      <option value="de">DE</option>
-      <option value="ro">RO</option>
-    </select>
+    <div class="header-actions">
+      <div class="auth-inline" id="manualLogin" style="display:none">
+        <div id="loginForm">
+          <input type="text" id="loginUser" data-i18n-ph="auth.user" placeholder="username" autocomplete="username">
+          <input type="password" id="loginPass" data-i18n-ph="auth.pass" placeholder="password" autocomplete="current-password">
+          <button id="loginBtn" class="primary"><span data-i18n="auth.login">Log in</span></button>
+        </div>
+        <div id="loginStatus" style="display:none">
+          <span class="auth-user"><span data-i18n="auth.manual"></span> <b id="loginUserLabel"></b></span>
+          <button id="logoutBtn" class="ghost"><span data-i18n="auth.logout">Log out</span></button>
+        </div>
+        <div class="err" id="errAuth"></div>
+      </div>
+    </div>
   </div>
 </header>
 <main>
@@ -169,6 +196,7 @@
           <button id="bboxBtn" class="ghost" data-i18n="step2.bbox"></button>
           <button id="importCalib" class="ghost" data-i18n="step2.import"></button>
           <button id="exportCalib" class="ghost" data-i18n="step2.export"></button>
+          <button id="deleteCalibCache" class="ghost" data-i18n="step2.deleteCache"></button>
           <input type="file" id="calibFile" accept="application/json" style="display:none">
           <span class="pill" style="background:#fff0f6;color:var(--pink-d)" id="dotCount"></span>
         </div>
@@ -201,7 +229,7 @@
   </div>
 
   <div class="card" id="results" style="display:none">
-    <div class="step"><div class="n">3</div><h2 data-i18n="res.title"></h2></div>
+    <div class="step"><div class="n">4</div><h2 data-i18n="res.title"></h2></div>
     <div class="chips" id="chips"></div>
     <div class="tabs" id="tabs"></div>
     <p class="vstat" id="vstat"></p>
@@ -236,6 +264,7 @@
 const $ = id => document.getElementById(id);
 let job = null, cps = [], bbox = null, clickMode = null;
 let summary = null, activeKey = null;
+let auth = {authenticated:false, user:null, manual_enabled:false};
 
 // ---------- i18n ----------
 const LANGS = ['en', 'de', 'ro'];
@@ -260,18 +289,22 @@ function applyStatic() {
     el.textContent = t(el.dataset.i18n));
   document.querySelectorAll('[data-i18n-html]').forEach(el =>
     el.innerHTML = t(el.dataset.i18nHtml));
-  document.querySelectorAll('[data-i18n-ph]').forEach(el =>
-    el.placeholder = t(el.dataset.i18nPh));
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPh);
+    el.setAttribute('aria-label', t(el.dataset.i18nPh));
+  });
 }
 
 async function loadLang() {
   const lang = currentLang();
   try {
-    L = await (await fetch('/static/i18n/' + lang + '.json')).json();
+    L = await (await fetch('/static/i18n/' + lang + '.json?v=' + Date.now(),
+                           {cache:'no-store'})).json();
   } catch { L = {}; }
   document.documentElement.lang = lang;
   $('langSel').value = lang;
   applyStatic();
+  updateManualAccess();
   refreshStationSelects();
 }
 
@@ -287,6 +320,53 @@ $('calibDetails').addEventListener('toggle', () => {
   $('calibChevron').textContent = $('calibDetails').open ? '▾' : '▸';
   refreshStationSelects();
 });
+
+// ---------- auth ----------
+async function checkAuth() {
+  try {
+    auth = await (await fetch('/api/auth/me')).json();
+  } catch {
+    auth = {authenticated:false, user:null, manual_enabled:false};
+  }
+  updateManualAccess();
+}
+
+function updateManualAccess() {
+  const showLogin = auth.manual_enabled && !auth.authenticated;
+  const showStatus = auth.manual_enabled && auth.authenticated;
+  $('manualLogin').style.display = auth.manual_enabled ? '' : 'none';
+  $('loginForm').style.display = showLogin ? '' : 'none';
+  $('loginStatus').style.display = showStatus ? '' : 'none';
+  $('loginUserLabel').textContent = showStatus ? (auth.user || '') : '';
+  if (job) {
+    $('step2').style.display = auth.authenticated ? '' : 'none';
+    if (!auth.authenticated) $('calibDetails').open = false;
+  } else {
+    $('step2').style.display = 'none';
+  }
+  refreshStationSelects();
+}
+
+$('loginBtn').onclick = async () => {
+  $('errAuth').textContent = '';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username:$('loginUser').value, password:$('loginPass').value})
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    const nextAuth = await r.json();
+    auth = {...auth, ...nextAuth};
+    $('loginPass').value = '';
+    updateManualAccess();
+  } catch (e) { $('errAuth').textContent = e.message; }
+};
+
+$('logoutBtn').onclick = async () => {
+  await fetch('/api/auth/logout', {method:'POST'});
+  auth = {authenticated:false, user:null, manual_enabled:auth.manual_enabled};
+  updateManualAccess();
+};
 
 // ---------- step 1: load ----------
 $('pdfFile').onchange = () => {
@@ -310,16 +390,25 @@ $('loadBtn').onclick = async () => {
 };
 
 function initCalibration() {
-  cps = job.icons.map(ic => ({
-    name: '', px: +ic.px.toFixed(1), py: +ic.py.toFixed(1),
-    lat: null, lon: null, station: true, kind: ic.kind
-  }));
-  bbox = [0, 0, job.width, job.height];
+  const preset = job.cached_calib || job.auto_calib;
+  if (preset) {
+    const stNames = new Set((preset.stations || []).map(s => s.name));
+    cps = (preset.control_points || []).map(p => ({
+      ...p, station: stNames.has(p.name)
+    }));
+    bbox = preset.map_bbox_px || [0, 0, job.width, job.height];
+  } else {
+    cps = job.icons.map(ic => ({
+      name: '', px: +ic.px.toFixed(1), py: +ic.py.toFixed(1),
+      lat: null, lon: null, station: true, kind: ic.kind
+    }));
+    bbox = [0, 0, job.width, job.height];
+  }
   $('mapimg').src = job.image + '?t=' + Date.now();
   $('mapimg').onload = () => drawOverlay();
-  $('step2').style.display = '';
   $('step3').style.display = '';
   $('results').style.display = 'none';
+  updateManualAccess();
   renderTable();
 }
 
@@ -448,6 +537,32 @@ $('addCp').onclick = () => {
   renderTable();
 };
 
+function resetCalibrationFromIcons() {
+  cps = job.icons.map(ic => ({
+    name: '', px: +ic.px.toFixed(1), py: +ic.py.toFixed(1),
+    lat: null, lon: null, station: true, kind: ic.kind
+  }));
+  bbox = [0, 0, job.width, job.height];
+  refreshStationSelects();
+  renderTable();
+}
+
+$('deleteCalibCache').onclick = async () => {
+  if (!job) return;
+  if (!confirm(t('step2.deleteConfirm'))) return;
+  $('err3').textContent = '';
+  try {
+    const r = await fetch('/api/calibration-cache/delete', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({job_id: job.job_id})
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    job.cached_calib = null;
+    job.auto_calib = null;
+    resetCalibrationFromIcons();
+  } catch (e) { $('err3').textContent = e.message; }
+};
+
 function buildCalib() {
   return {
     map_bbox_px: bbox,
@@ -498,7 +613,7 @@ function refreshStationSelects() {
 $('solveBtn').onclick = async () => {
   $('err3').textContent = '';
   let calib = null;
-  if ($('calibDetails').open) {
+  if (auth.authenticated && $('calibDetails').open) {
     const built = buildCalib();
     const hasAnyGPS = built.control_points.some(p => p.lat != null || p.lon != null);
     if (hasAnyGPS) {
@@ -589,6 +704,7 @@ function selectVariant(key) {
 }
 
 loadLang();
+checkAuth();
 </script>
 </body>
 </html>
