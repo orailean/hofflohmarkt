@@ -24,6 +24,7 @@ import os
 import re
 import secrets
 import shutil
+import concurrent.futures
 import subprocess
 import sys
 import time
@@ -83,6 +84,7 @@ OVERPASS_URL = os.environ.get(
 TESSERACT_CMD = os.environ.get("HOFFROUTE_TESSERACT_CMD") or shutil.which(
     "tesseract")
 TESSERACT_LANG = os.environ.get("HOFFROUTE_TESSERACT_LANG", "deu+eng")
+_PREPARE_WORKERS = int(os.environ.get("HOFFROUTE_PREPARE_WORKERS", "2"))
 AUTH_COOKIE = "hoffroute_auth"
 AUTH_TTL_SECONDS = int(os.environ.get("HOFFROUTE_AUTH_TTL_SECONDS", "43200"))
 AUTH_COOKIE_SECURE = os.environ.get(
@@ -163,6 +165,8 @@ class _Logger:
 LOGGER = _Logger()
 
 app = FastAPI(title="hoffroute")
+_prepare_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_PREPARE_WORKERS, thread_name_prefix="prepare")
 
 
 def parse_manual_users():
@@ -915,41 +919,31 @@ def delete_calibration_cache(payload: dict, request: Request):
     }
 
 
-@app.post("/api/prepare")
-def prepare(file: UploadFile | None = None, url: str = Form(None)):
-    if not file and not url:
-        raise HTTPException(400, "provide a PDF file or a URL")
-    jid = str(uuid.uuid4())
+def _run_prepare(jid: str, pdf_path: Path | None, url: str | None):
     d = JOBS_DIR / jid
-    d.mkdir(parents=True)
-    LOGGER.info("prepare start job_id=%s source=%s", jid, "upload" if file else "url")
+    result_path = d / "result.json"
+
+    def _fail(detail: str):
+        try:
+            result_path.write_text(json.dumps({"status": "error", "detail": detail}))
+        except Exception:
+            pass
+
     try:
-        if file:
-            pdf = d / "map.pdf"
-            data = file.file.read(MAX_PDF_BYTES + 1)
-            if len(data) > MAX_PDF_BYTES:
-                raise HTTPException(413, "PDF larger than 50 MB")
-            if not data.startswith(b"%PDF"):
-                raise HTTPException(400, "not a PDF file")
-            pdf.write_bytes(data)
-            LOGGER.info(
-                "prepare stored uploaded pdf job_id=%s filename=%r bytes=%d",
-                jid, file.filename, len(data))
-        else:
-            if not url.lower().startswith(("http://", "https://")):
-                raise HTTPException(400, "URL must be http(s)")
+        if url:
             try:
                 pdf = hr.fetch_pdf(url, d)
             except Exception as e:
-                raise HTTPException(400, f"could not download PDF: {e}")
+                _fail(f"could not download PDF: {e}")
+                return
             LOGGER.info("prepare downloaded pdf job_id=%s url=%s path=%s", jid, url, pdf)
+        else:
+            pdf = pdf_path
 
         doc, img = hr.render_page(pdf, RENDER_DPI)
         doc[0].get_pixmap(dpi=RENDER_DPI).save(d / "page.png")
         h, w = img.shape[:2]
         icons = hr.detect_station_icons(img)
-        # full-page dot candidates as a preview; the solve step re-detects
-        # inside the user-chosen bbox
         dots = hr.detect_dots(img, (0, 0, w, h))
         pdf_hash = pdf_sha256(pdf)
         LOGGER.info(
@@ -968,9 +962,7 @@ def prepare(file: UploadFile | None = None, url: str = Form(None)):
                     pdf, RENDER_DPI, d / "page.png", icons, dots, w, h)
             except Exception as e:
                 LOGGER.exception(
-                    "prepare auto-calibration failed job_id=%s error=%s",
-                    jid, e)
-                auto_calib = None
+                    "prepare auto-calibration failed job_id=%s error=%s", jid, e)
             if auto_calib is not None:
                 (d / "calib.json").write_text(json.dumps(
                     auto_calib, indent=2, ensure_ascii=False))
@@ -982,28 +974,66 @@ def prepare(file: UploadFile | None = None, url: str = Form(None)):
                 LOGGER.info("prepare auto-calibration unavailable job_id=%s", jid)
         else:
             LOGGER.info("prepare using cached calibration job_id=%s", jid)
-    except HTTPException:
-        LOGGER.warning("prepare failed job_id=%s; cleaning job directory", jid)
-        shutil.rmtree(d, ignore_errors=True)
-        raise
+
+        LOGGER.info(
+            "prepare complete job_id=%s cached_calib=%s auto_calib=%s",
+            jid, cached_calib is not None, auto_calib is not None)
+        result_path.write_text(json.dumps({
+            "status": "ready",
+            "job_id": jid,
+            "image": f"/jobs/{jid}/page.png",
+            "pdf": f"/jobs/{jid}/{pdf.name}",
+            "width": w, "height": h, "dpi": RENDER_DPI,
+            "cached_calib": cached_calib,
+            "auto_calib": auto_calib,
+            "icons": [{"kind": k, "px": x, "py": y} for k, x, y in icons],
+            "dots": [{"px": x, "py": y} for x, y in dots],
+        }, ensure_ascii=False))
     except Exception as e:
         LOGGER.exception("prepare failed job_id=%s error=%s", jid, e)
-        shutil.rmtree(d, ignore_errors=True)
-        raise HTTPException(500, f"failed to process PDF: {e}")
+        _fail(f"failed to process PDF: {e}")
 
-    LOGGER.info(
-        "prepare complete job_id=%s cached_calib=%s auto_calib=%s",
-        jid, cached_calib is not None, auto_calib is not None)
-    return {
-        "job_id": jid,
-        "image": f"/jobs/{jid}/page.png",
-        "pdf": f"/jobs/{jid}/{pdf.name}",
-        "width": w, "height": h, "dpi": RENDER_DPI,
-        "cached_calib": cached_calib,
-        "auto_calib": auto_calib,
-        "icons": [{"kind": k, "px": x, "py": y} for k, x, y in icons],
-        "dots": [{"px": x, "py": y} for x, y in dots],
-    }
+
+@app.post("/api/prepare")
+def prepare(file: UploadFile | None = None, url: str = Form(None)):
+    if not file and not url:
+        raise HTTPException(400, "provide a PDF file or a URL")
+    jid = str(uuid.uuid4())
+    d = JOBS_DIR / jid
+    d.mkdir(parents=True)
+    LOGGER.info("prepare start job_id=%s source=%s", jid, "upload" if file else "url")
+
+    pdf_path = None
+    if file:
+        data = file.file.read(MAX_PDF_BYTES + 1)
+        if len(data) > MAX_PDF_BYTES:
+            shutil.rmtree(d, ignore_errors=True)
+            raise HTTPException(413, "PDF larger than 50 MB")
+        if not data.startswith(b"%PDF"):
+            shutil.rmtree(d, ignore_errors=True)
+            raise HTTPException(400, "not a PDF file")
+        pdf_path = d / "map.pdf"
+        pdf_path.write_bytes(data)
+        LOGGER.info(
+            "prepare stored uploaded pdf job_id=%s filename=%r bytes=%d",
+            jid, file.filename, len(data))
+        url = None
+    else:
+        if not url.lower().startswith(("http://", "https://")):
+            shutil.rmtree(d, ignore_errors=True)
+            raise HTTPException(400, "URL must be http(s)")
+
+    _prepare_executor.submit(_run_prepare, jid, pdf_path, url)
+    return {"job_id": jid, "status": "processing"}
+
+
+@app.get("/api/prepare/{job_id}/status")
+def prepare_status(job_id: str):
+    d = job_dir(job_id)
+    result = read_json(d / "result.json")
+    if result is None:
+        return {"status": "processing"}
+    return result
 
 
 @app.post("/api/solve")
