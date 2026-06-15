@@ -6,6 +6,7 @@
   "step1.urlPh": "https://…/flyer.pdf",
   "step1.load": "Încarcă harta",
   "step1.errNoInput": "Alege un fișier PDF sau introdu un URL.",
+  "step1.errTimeout": "Cererea a durat prea mult — încearcă din nou.",
   "auth.title": "Acces la calibrarea manuală",
   "auth.user": "utilizator",
   "auth.pass": "parolă",

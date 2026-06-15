@@ -6,6 +6,7 @@
   "step1.urlPh": "https://…/flyer.pdf",
   "step1.load": "Karte laden",
   "step1.errNoInput": "PDF-Datei auswählen oder URL eingeben.",
+  "step1.errTimeout": "Die Anfrage hat zu lange gedauert — bitte erneut versuchen.",
   "auth.title": "Zugang zur manuellen Kalibrierung",
   "auth.user": "Benutzername",
   "auth.pass": "Passwort",

@@ -76,6 +76,8 @@ AUTOCALIB_INLIER_M = float(os.environ.get(
     "HOFFROUTE_AUTOCALIB_INLIER_M", "180"))
 AUTOCALIB_TRANSIT_RADIUS_M = int(os.environ.get(
     "HOFFROUTE_AUTOCALIB_TRANSIT_RADIUS_M", "500"))
+AUTOCALIB_TRANSIT_TIMEOUT_S = int(os.environ.get(
+    "HOFFROUTE_AUTOCALIB_TRANSIT_TIMEOUT_S", "20"))
 OVERPASS_URL = os.environ.get(
     "HOFFROUTE_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
 TESSERACT_CMD = os.environ.get("HOFFROUTE_TESSERACT_CMD") or shutil.which(
@@ -737,7 +739,13 @@ def transit_stations_from_icons(icons, control_points):
     px2ll, _ = hr.fit_affine(control_points)
     stations = []
     seen = set()
+    deadline = time.monotonic() + AUTOCALIB_TRANSIT_TIMEOUT_S
     for kind, px, py in icons:
+        if time.monotonic() >= deadline:
+            LOGGER.warning(
+                "auto-calibration transit lookup stopped: budget of %ds exceeded",
+                AUTOCALIB_TRANSIT_TIMEOUT_S)
+            break
         lat, lon = px2ll(px, py)
         LOGGER.info(
             "auto-calibration transit lookup kind=%r px=(%.1f,%.1f) approx=(%.7f,%.7f) radius_m=%d",

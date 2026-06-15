@@ -6,6 +6,7 @@
   "step1.urlPh": "https://…/flyer.pdf",
   "step1.load": "Load map",
   "step1.errNoInput": "Choose a PDF file or enter a URL.",
+  "step1.errTimeout": "The request timed out — please try again.",
   "auth.title": "Manual calibration access",
   "auth.user": "username",
   "auth.pass": "password",

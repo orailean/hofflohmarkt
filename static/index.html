@@ -400,8 +400,16 @@ $('loadBtn').onclick = async () => {
   $('spinner').classList.add('on'); $('loadBtn').disabled = true;
   try {
     const r = await fetch('/api/prepare', {method:'POST', body:fd});
-    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
-    job = await r.json();
+    if (!r.ok) {
+      let detail;
+      try { detail = (await r.json()).detail; } catch (_) {}
+      throw new Error(detail || r.statusText);
+    }
+    let body;
+    try { body = await r.json(); } catch (_) {
+      throw new Error(t('step1.errTimeout'));
+    }
+    job = body;
     initCalibration();
   } catch (e) { $('err1').textContent = e.message; }
   $('spinner').classList.remove('on'); $('loadBtn').disabled = false;
