@@ -33,7 +33,7 @@ Street-following behavior is unconditional. There will be no user-facing option 
 
 The rendered first page will be converted to a road mask using the flyer’s pale-blue street styling. The extractor will operate in a perceptual color space and combine color distance, saturation, and brightness thresholds rather than depend on one exact RGB value. Magenta market dots, green transit icons, dark labels, logos, page borders, and annotation colors must be excluded.
 
-Small gaps caused by text printed over roads will be closed morphologically, subject to maximum gap and direction constraints. Large white regions must not be bridged. The implementation will use the existing OpenCV dependency; no hosted vision service is introduced.
+Small gaps caused by text printed over roads will be closed morphologically, subject to maximum gap and direction constraints. Large white regions must not be bridged. The implementation will use the existing NumPy and SciPy image-processing dependencies; no hosted vision service is introduced.
 
 The mask will be skeletonized and converted into a weighted graph. Graph nodes represent junctions, endpoints, and sampled bend points. Edge weights are pixel arc lengths. Short isolated components and page-decoration components will be discarded using size, location, and proximity-to-market criteria.
 
