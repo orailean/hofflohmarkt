@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from flyer_streets import FlyerStreetGraph
+from flyer_streets import FlyerStreetError, FlyerStreetGraph
 
 
 PALE_BLUE = np.array([190, 218, 247], dtype=np.uint8)
@@ -21,6 +21,14 @@ def synthetic_street_map(label_gap=None, block_gap=None):
         image[97:104, left:left + block_gap] = 255
     image[91:110, 191:210] = MAGENTA
     return image
+
+
+def graph_fixture(shape=(200, 200), cross=True):
+    mask = np.zeros(shape, dtype=bool)
+    mask[50, 20:181] = True
+    if cross:
+        mask[20:101, 100] = True
+    return FlyerStreetGraph.from_skeleton(mask.copy(), mask, dpi=300)
 
 
 class FlyerStreetExtractionTests(unittest.TestCase):
@@ -42,6 +50,39 @@ class FlyerStreetExtractionTests(unittest.TestCase):
             image, (20, 20, 380, 260), dpi=300)
 
         self.assertFalse(graph.connected((80, 100), (320, 100)))
+
+
+class FlyerStreetRoutingTests(unittest.TestCase):
+    def test_snap_stops_routes_every_stop_and_closes_on_street_mask(self):
+        graph = graph_fixture()
+        stops = [(25, 44), (75, 56), (100, 22)]
+
+        access = graph.snap_stops(stops, max_distance_px=15)
+        distances = graph.distance_matrix(access)
+        order = [0, 2, 1, 0]
+        route = graph.route_geometry(order, access)
+        report = graph.validate_closed_route(order, access, route)
+
+        self.assertEqual([a.stop_xy for a in access], stops)
+        self.assertEqual(route[0], route[-1])
+        self.assertTrue(report.closed)
+        self.assertEqual(report.unique_stop_count, 3)
+        self.assertLessEqual(report.max_mask_distance_px, 2)
+        self.assertTrue(np.isfinite(distances).all())
+
+    def test_two_stops_may_share_one_access_node_without_being_dropped(self):
+        graph = graph_fixture(cross=False)
+
+        access = graph.snap_stops(
+            [(40, 45), (40, 55)], max_distance_px=15)
+
+        self.assertEqual(access[0].node, access[1].node)
+        self.assertEqual(graph.distance_matrix(access)[0, 1], 0)
+
+    def test_reports_number_of_an_unreachable_market_marker(self):
+        with self.assertRaisesRegex(FlyerStreetError, "marker 2"):
+            graph_fixture(cross=False).snap_stops(
+                [(40, 45), (180, 180)], max_distance_px=15)
 
 
 if __name__ == "__main__":

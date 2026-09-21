@@ -13,6 +13,22 @@ class FlyerStreetError(ValueError):
     """Raised when a usable printed-street network cannot be built."""
 
 
+@dataclass(frozen=True)
+class StreetAccess:
+    stop_xy: tuple[float, float]
+    street_xy: tuple[float, float]
+    node: int
+    distance_px: float
+
+
+@dataclass(frozen=True)
+class RouteValidation:
+    closed: bool
+    unique_stop_count: int
+    max_access_distance_px: float
+    max_mask_distance_px: float
+
+
 def _scaled(value, dpi):
     return max(1, int(round(value * dpi / 300)))
 
@@ -175,3 +191,87 @@ class FlyerStreetGraph:
         second = self.nearest_node(second_xy, max_distance=_scaled(8, self.dpi))
         distances = csgraph.dijkstra(self.adjacency, indices=first)
         return bool(np.isfinite(distances[second]))
+
+    def snap_stops(self, stops, max_distance_px):
+        access = []
+        for marker_number, stop in enumerate(stops, start=1):
+            distance, node = self._node_tree.query(
+                np.asarray(stop, dtype=float))
+            if distance > max_distance_px:
+                raise FlyerStreetError(
+                    f"market marker {marker_number} is not connected to the "
+                    "printed street network")
+            street = self.node_xy[int(node)]
+            access.append(StreetAccess(
+                stop_xy=(float(stop[0]), float(stop[1])),
+                street_xy=(float(street[0]), float(street[1])),
+                node=int(node),
+                distance_px=float(distance),
+            ))
+        if access:
+            matrix = self.distance_matrix(access)
+            disconnected = np.argwhere(~np.isfinite(matrix))
+            if len(disconnected):
+                marker_number = int(disconnected[0, 1]) + 1
+                raise FlyerStreetError(
+                    f"market marker {marker_number} is on a disconnected "
+                    "printed street component")
+        return access
+
+    def distance_matrix(self, access):
+        nodes = np.asarray([item.node for item in access], dtype=int)
+        if not len(nodes):
+            return np.empty((0, 0), dtype=float)
+        unique_nodes, inverse = np.unique(nodes, return_inverse=True)
+        distances = csgraph.dijkstra(
+            self.adjacency, indices=unique_nodes, directed=False)
+        return np.asarray(distances)[inverse][:, nodes]
+
+    def route_geometry(self, order, access):
+        if len(order) < 2:
+            raise FlyerStreetError("a route needs at least two stop occurrences")
+        source_nodes = np.asarray(
+            sorted({access[index].node for index in order[:-1]}), dtype=int)
+        _, predecessors = csgraph.dijkstra(
+            self.adjacency, indices=source_nodes, directed=False,
+            return_predecessors=True)
+        source_rows = {
+            node: row for row, node in enumerate(source_nodes.tolist())
+        }
+        route_nodes = []
+        for first_index, second_index in zip(order, order[1:]):
+            source = access[first_index].node
+            target = access[second_index].node
+            leg = [target]
+            current = target
+            while current != source:
+                current = int(predecessors[source_rows[source], current])
+                if current < 0:
+                    raise FlyerStreetError(
+                        f"no printed-street path between markers "
+                        f"{first_index + 1} and {second_index + 1}")
+                leg.append(current)
+            leg.reverse()
+            route_nodes.extend(leg if not route_nodes else leg[1:])
+        return [tuple(self.node_xy[node]) for node in route_nodes]
+
+    def validate_closed_route(self, order, access, route):
+        closed = bool(
+            len(order) > 1 and order[0] == order[-1] and route and
+            np.allclose(route[0], route[-1]))
+        stop_occurrences = order[:-1] if closed else order
+        max_access = max(
+            (access[index].distance_px for index in set(stop_occurrences)),
+            default=0.0)
+        off_mask = ndimage.distance_transform_edt(~self.routing_mask)
+        max_mask_distance = 0.0
+        for x, y in route:
+            ix = int(np.clip(round(x), 0, off_mask.shape[1] - 1))
+            iy = int(np.clip(round(y), 0, off_mask.shape[0] - 1))
+            max_mask_distance = max(max_mask_distance, float(off_mask[iy, ix]))
+        return RouteValidation(
+            closed=closed,
+            unique_stop_count=len(set(stop_occurrences)),
+            max_access_distance_px=max_access,
+            max_mask_distance_px=max_mask_distance,
+        )
