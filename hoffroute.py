@@ -13,8 +13,8 @@ Pipeline:
        B. closed loop from/to one station
        C. shortest free circle over the dots only (no fixed start/end;
           always produced, and the only variant if no stations are given)
-  4. Optionally fetch the real walking geometry/distance from the public
-     FOSSGIS OSRM foot router.
+  4. Fetch real walking distances and geometry from the public FOSSGIS OSRM
+     foot router. Walking distances drive the route order.
   5. Export: GPX (waypoints + route + track), GeoJSON, chunked Google Maps
      links, a self-contained Leaflet HTML map, and the original PDF with the
      route drawn on top (one annotated PDF per variant).
@@ -40,7 +40,8 @@ import argparse
 import json
 import math
 import ssl
-import sys
+import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -54,6 +55,8 @@ except ImportError:  # fall back to system certs
 import fitz  # PyMuPDF
 import numpy as np
 from scipy import ndimage
+
+from flyer_streets import FlyerStreetError, FlyerStreetGraph
 
 EARTH_R = 6371000.0
 
@@ -110,7 +113,7 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6
                 return False
             return int(_blob_sizes[lbl - 1]) > 2500
 
-        def looks_like_legend_marker(p):
+        def legend_text_signal(p):
             x, y = map(int, p)
             y0, y1 = max(0, y - 75), min(mask.shape[0], y + 75)
             x0, x1 = max(0, x - 260), min(mask.shape[1], x + 260)
@@ -133,7 +136,13 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6
                 if area < 180 and (w < 28 or h < 28 or w / max(h, 1) > 1.8):
                     text_like_pixels += area
                     text_like_components += 1
-            return text_like_components >= 4 and text_like_pixels >= 80
+            return text_like_components, text_like_pixels
+
+        def looks_like_legend_marker(p, strong=False):
+            components, pixels = legend_text_signal(p)
+            if strong:
+                return components >= 12 and pixels >= 600
+            return components >= 4 and pixels >= 80
 
         def has_dark_text_nearby(p):
             """Sponsor logos have dense dark text around them. Uses a broad
@@ -162,6 +171,7 @@ def detect_dots(img, bbox, min_radius_px=6, merge_dist_px=18, isolation_factor=6
         pts = [p for p, nd in zip(pts, nn)
                if not is_logo_blob(p) and
                not has_dark_text_nearby(p) and
+               not looks_like_legend_marker(p, strong=True) and
                (nd <= threshold or not looks_like_legend_marker(p))]
 
     return pts
@@ -236,6 +246,21 @@ def fit_affine(control_points):
     resid = np.array([px2ll(c["px"], c["py"]) for c in control_points]) - L
     rms_m = math.sqrt(np.mean(np.sum((resid * [111320, 111320 * 0.667]) ** 2, axis=1)))
     return px2ll, rms_m
+
+
+def fit_reverse_affine(control_points):
+    """Fit the inverse affine transform from WGS84 coordinates to pixels."""
+    locations = np.array([
+        [c["lat"], c["lon"], 1.0] for c in control_points
+    ])
+    pixels = np.array([[c["px"], c["py"]] for c in control_points])
+    transform, *_ = np.linalg.lstsq(locations, pixels, rcond=None)
+
+    def ll2px(lat, lon):
+        x, y = np.array([lat, lon, 1.0]) @ transform
+        return float(x), float(y)
+
+    return ll2px
 
 
 def haversine_matrix(coords):
@@ -349,37 +374,118 @@ def solve_circle(D, nodes, tries=3):
 
 
 # ----------------------------------------------------------------------------
-# 4. OSRM walking geometry (optional)
+# 4. OSRM walking distances and geometry
 # ----------------------------------------------------------------------------
 
-OSRM_BASE = "https://routing.openstreetmap.de/routed-foot/route/v1/foot/"
+OSRM_BASE = "https://routing.openstreetmap.de/routed-foot"
 
 
-def osrm_geometry(coords, chunk=24):
-    """Walking geometry along ordered coords [(lat,lon),...]. Returns
-    (list[(lat,lon)] polyline, meters, seconds) or (None, None, None)."""
-    geom, dist, dur = [], 0.0, 0.0
-    try:
-        i = 0
-        while i < len(coords) - 1:
-            part = coords[i:i + chunk + 1]
-            locs = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in part)
-            url = OSRM_BASE + locs + "?overview=full&geometries=geojson&steps=false"
-            req = urllib.request.Request(url, headers={"User-Agent": "hoffroute/1.0"})
-            with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as r:
-                data = json.loads(r.read())
-            if data.get("code") != "Ok":
-                return None, None, None
-            route = data["routes"][0]
-            dist += route["distance"]
-            dur += route["duration"]
-            seg = [(lat, lon) for lon, lat in route["geometry"]["coordinates"]]
-            geom.extend(seg if not geom else seg[1:])
-            i += chunk
-        return geom, dist, dur
-    except Exception as e:
-        print(f"  OSRM unavailable ({e}); falling back to straight lines", file=sys.stderr)
-        return None, None, None
+class StreetRoutingError(RuntimeError):
+    """Raised when a street-following route cannot be calculated."""
+
+
+class StreetRouter:
+    """Pedestrian distances and geometry from the free FOSSGIS OSRM API."""
+
+    _request_lock = threading.Lock()
+    _last_request_at = None
+
+    def __init__(self, base_url=OSRM_BASE, min_interval=1.0,
+                 table_block=40, route_chunk=24):
+        self.base_url = base_url.rstrip("/")
+        self.min_interval = min_interval
+        self.table_block = table_block
+        self.route_chunk = route_chunk
+
+    def _request_json(self, service, coords, query):
+        locs = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in coords)
+        url = (f"{self.base_url}/{service}/v1/foot/{locs}?"
+               f"{urllib.parse.urlencode(query)}")
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "hoffroute/1.0"})
+        router_type = type(self)
+        with router_type._request_lock:
+            if router_type._last_request_at is not None:
+                remaining = self.min_interval - (
+                    time.monotonic() - router_type._last_request_at)
+                if remaining > 0:
+                    time.sleep(remaining)
+            try:
+                with urllib.request.urlopen(
+                    req, timeout=30, context=SSL_CTX
+                ) as response:
+                    return json.loads(response.read())
+            except Exception as exc:
+                raise StreetRoutingError(
+                    f"street router unavailable: {exc}") from exc
+            finally:
+                router_type._last_request_at = time.monotonic()
+
+    @staticmethod
+    def _require_ok(data):
+        if data.get("code") != "Ok":
+            raise StreetRoutingError(
+                data.get("message") or f"street router returned {data.get('code', 'an error')}")
+
+    def distance_matrix(self, coords):
+        size = len(coords)
+        matrix = np.empty((size, size), dtype=float)
+        for source_start in range(0, size, self.table_block):
+            source_indices = list(range(
+                source_start, min(source_start + self.table_block, size)))
+            for destination_start in range(0, size, self.table_block):
+                destination_indices = list(range(
+                    destination_start,
+                    min(destination_start + self.table_block, size)))
+                request_indices = source_indices + [
+                    i for i in destination_indices if i not in source_indices
+                ]
+                positions = {
+                    original: position
+                    for position, original in enumerate(request_indices)
+                }
+                request_coords = [coords[i] for i in request_indices]
+                data = self._request_json("table", request_coords, {
+                    "annotations": "distance",
+                    "sources": ";".join(
+                        str(positions[i]) for i in source_indices),
+                    "destinations": ";".join(
+                        str(positions[i]) for i in destination_indices),
+                })
+                self._require_ok(data)
+                distances = data.get("distances")
+                expected_shape = (len(source_indices), len(destination_indices))
+                tile = np.asarray(distances, dtype=object)
+                if tile.shape != expected_shape or any(
+                    value is None for row in tile for value in row
+                ):
+                    raise StreetRoutingError(
+                        "street router returned an incomplete distance matrix")
+                matrix[np.ix_(source_indices, destination_indices)] = \
+                    tile.astype(float)
+        return matrix
+
+    def route(self, coords):
+        geometry, distance, duration = [], 0.0, 0.0
+        index = 0
+        while index < len(coords) - 1:
+            part = coords[index:index + self.route_chunk + 1]
+            data = self._request_json("route", part, {
+                "overview": "full", "geometries": "geojson", "steps": "false",
+            })
+            self._require_ok(data)
+            routes = data.get("routes") or []
+            if not routes:
+                raise StreetRoutingError("street router returned no route")
+            route = routes[0]
+            segment = [
+                (lat, lon) for lon, lat in route["geometry"]["coordinates"]
+            ]
+            geometry.extend(segment if not geometry else segment[1:])
+            distance += float(route["distance"])
+            duration += float(route["duration"])
+            index += self.route_chunk
+        return geometry, distance, duration
 
 
 # ----------------------------------------------------------------------------
@@ -515,16 +621,28 @@ map.fitBounds(g0.getLayers()[0].getBounds().pad(0.08));
 
 
 def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.41),
-                 dpi=300, station_labels=None):
+                 dpi=300, station_labels=None, route_px=None,
+                 access_spurs=None):
     """Draw the route polyline + stop numbers onto page 0 of the PDF."""
     s = 72.0 / dpi  # px -> pdf points
     doc = fitz.open(src_doc_path)
     page = doc[0]
     pts = [fitz.Point(x * s, y * s) for x, y in order_px]
+    route_pts = [fitz.Point(x * s, y * s)
+                 for x, y in (route_px or order_px)]
 
     closed = order_px[0] == order_px[-1]
+    if access_spurs:
+        spur_shape = page.new_shape()
+        for (ax, ay), (bx, by) in access_spurs:
+            spur_shape.draw_line(
+                fitz.Point(ax * s, ay * s), fitz.Point(bx * s, by * s))
+        spur_shape.finish(color=(0.11, 0.46, 0.84), width=1.1,
+                          dashes="[2 2]", stroke_opacity=0.65)
+        spur_shape.commit()
+
     shape = page.new_shape()
-    shape.draw_polyline(pts)
+    shape.draw_polyline(route_pts)
     shape.finish(color=(0.11, 0.46, 0.84), width=2.2, lineJoin=1, lineCap=1,
                  stroke_opacity=0.8)
     shape.commit()
@@ -551,30 +669,64 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     # Explicit station labels. The flyer often prints only U/S icons, so draw
     # the resolved station names onto the annotated output.
     if station_labels:
-        for x, y, label in station_labels:
-            p = fitz.Point(x * s, y * s)
-            text = str(label)
-            font_size = max(4.2, min(5.1, 108 / max(len(text), 1)))
-            pad_x, pad_y = 1.8, 1.1
-            w = min(128, max(30, len(text) * font_size * 0.48))
-            h = font_size + 2 * pad_y
-            if p.x + 7 + w <= page.rect.width - 2:
-                left = p.x + 5.5
+        for station in station_labels:
+            if isinstance(station, dict):
+                x, y = station["x"], station["y"]
+                name = str(station["name"])
+                kind = str(station.get("kind", "")).upper()
+                role = station.get("role")
             else:
-                left = max(2, p.x - w - 5.5)
-            top = min(max(p.y - h - 4, 2), page.rect.height - h - 2)
-            rect = fitz.Rect(left, top, left + w, top + h)
+                x, y, name = station
+                kind, role = "", None
+            p = fitz.Point(x * s, y * s)
+            transit = f"{kind}-BAHN" if kind in {"S", "U"} else "STATION"
+            role_text = {
+                "start": "START",
+                "end": "ZIEL",
+                "start_end": "START / ZIEL",
+            }.get(role)
+            header = f"{role_text} · {transit}" if role_text else transit
+            accent = {
+                "start": (0.13, 0.55, 0.13),
+                "end": (0.80, 0.10, 0.10),
+                "start_end": (0.16, 0.45, 0.75),
+            }.get(role, (0.16, 0.45, 0.75))
+            name_size = 8.0
+            while (fitz.get_text_length(name, fontname="hebo", fontsize=name_size)
+                   > 126 and name_size > 6.5):
+                name_size -= 0.5
+            header_size = 5.8
+            pad_x = 4.0
+            width = min(136, max(
+                76,
+                fitz.get_text_length(name, fontname="hebo", fontsize=name_size)
+                + 2 * pad_x,
+                fitz.get_text_length(header, fontname="hebo", fontsize=header_size)
+                + 2 * pad_x,
+            ))
+            height = 27.0
+            if p.x + 8 + width <= page.rect.width - 4:
+                left = p.x + 8
+            else:
+                left = max(4, p.x - width - 8)
+            top = min(max(p.y - height / 2, 4), page.rect.height - height - 20)
+            rect = fitz.Rect(left, top, left + width, top + height)
             sh = page.new_shape()
+            edge = fitz.Point(rect.x0 if left > p.x else rect.x1,
+                              rect.y0 + height / 2)
+            sh.draw_line(p, edge)
+            sh.finish(color=accent, width=1.1)
             sh.draw_rect(rect)
-            sh.finish(color=(1, 1, 1), fill=(1, 1, 1),
-                      width=0.1, fill_opacity=0.72, stroke_opacity=0)
+            sh.finish(color=accent, fill=(1, 1, 1),
+                      width=1.0, fill_opacity=0.94, stroke_opacity=1)
             sh.commit()
             page.insert_text(
-                fitz.Point(rect.x0 + pad_x, rect.y0 + pad_y + font_size),
-                text,
-                fontsize=font_size,
-                color=(0.05, 0.05, 0.05),
-                render_mode=0)
+                fitz.Point(rect.x0 + pad_x, rect.y0 + 8), header,
+                fontsize=header_size, fontname="hebo", color=accent)
+            page.insert_text(
+                fitz.Point(rect.x0 + pad_x, rect.y0 + 20), name,
+                fontsize=name_size, fontname="hebo",
+                color=(0.05, 0.05, 0.05))
 
     # stop numbers (skip start/end stations)
     for i, p in enumerate(pts[1:-1], start=1):
@@ -618,24 +770,22 @@ def fetch_pdf(src, dest_dir):
 
 
 def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
-                 use_osrm=True, log=print, resolve_stations=None):
-    """Full pipeline on a local PDF. calib is the parsed calibration dict, or
-    None to run in pixel-only mode (annotated PDFs only; no GPS exports).
-    resolve_stations: optional callable(icons, control_points) -> station list,
-    used to look up transit station names when calib has no stations.
-    Returns a summary dict (dot count, fit rms, per-variant stats, files)."""
+                 log=print, resolve_stations=None, street_router=None):
+    """Build a printed-street PDF route and optional geographic exports."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     calibrated = (calib is not None and
                   len(calib.get("control_points", [])) >= 3)
-    steps = 6 if calibrated else 4
+    steps = 6
+    router = (street_router or StreetRouter()) if calibrated else None
 
     # --- 1. render + detect dots ---
     log(f"1/{steps} rendering + detecting dots ...")
     _, img = render_page(pdf_path, dpi)
     h, w = img.shape[:2]
-    bbox = calib["map_bbox_px"] if calibrated else [0, 0, w, h]
+    bbox = (calib.get("map_bbox_px", [0, 0, w, h])
+            if calib else [0, 0, w, h])
     dots_px = detect_dots(img, bbox)
     log(f"    {len(dots_px)} market dots found")
     if not dots_px:
@@ -654,37 +804,49 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
             except Exception as _e:
                 log(f"    station name resolution failed: {_e}")
 
-    # --- 2. node table + distance matrix ---
+    # --- 2. printed-street graph + optional georeferencing ---
+    log(f"2/{steps} extracting printed street network ...")
+    graph = FlyerStreetGraph.from_image(img, bbox, dpi=dpi)
+    max_access_px = 90.0 * dpi / 300.0
+    dot_access = graph.snap_stops(dots_px, max_access_px)
+
+    stations = list(calib.get("stations", [])) if calibrated else []
+    station_access, connected_stations = [], []
+    for station in stations:
+        try:
+            access = graph.snap_stops(
+                [(station["px"], station["py"])], max_access_px)[0]
+            if dot_access and not np.isfinite(
+                graph.distance_matrix([access, dot_access[0]])[0, 1]
+            ):
+                raise FlyerStreetError("disconnected station access")
+        except FlyerStreetError as exc:
+            log(f"    skipping station {station['name']}: {exc}")
+            continue
+        connected_stations.append(station)
+        station_access.append(access)
+    stations = connected_stations
+    all_access = station_access + dot_access
+    D = graph.distance_matrix(all_access)
+    ns = len(stations)
+    dot_idx = list(range(ns, ns + len(dots_px)))
+    station_names = [station["name"] for station in stations]
+    node_to_px = {
+        index: access.stop_xy for index, access in enumerate(all_access)
+    }
+
+    rms = None
+    coords_arr = None
+    straight_D = D
     if calibrated:
-        log(f"2/{steps} georeferencing ...")
-        stations = calib.get("stations", [])
+        log("    georeferencing GPS export coordinates ...")
         px2ll, rms = fit_affine(calib["control_points"])
         log(f"    affine fit over {len(calib['control_points'])} control points "
             f"(rms {rms:.0f} m)")
         dots_ll = [px2ll(x, y) for x, y in dots_px]
-        ns = len(stations)
         coords_arr = np.array([[s["lat"], s["lon"]] for s in stations] +
                                [list(d) for d in dots_ll]).reshape(-1, 2)
-        D = haversine_matrix(coords_arr)
-        station_names = [s["name"] for s in stations]
-        node_to_px = {i: (s["px"], s["py"]) for i, s in enumerate(stations)}
-    else:
-        log(f"2/{steps} building pixel-space graph (no calibration — "
-            "only annotated PDFs will be produced) ...")
-        stations = []
-        rms = None
-        icons = detect_station_icons(img)
-        ns = len(icons)
-        station_names = [f"{kind.split()[0]} {i + 1}"
-                         for i, (kind, _, _) in enumerate(icons)]
-        icon_pxs = [(float(x), float(y)) for _, x, y in icons]
-        all_px_nodes = icon_pxs + list(dots_px)
-        D = euclidean_matrix(all_px_nodes)
-        node_to_px = {i: pxpos for i, pxpos in enumerate(icon_pxs)}
-
-    for i, p in enumerate(dots_px):
-        node_to_px[ns + i] = p
-    dot_idx = list(range(ns, ns + len(dots_px)))
+        straight_D = haversine_matrix(coords_arr)
 
     # --- 3. solve TSP variants ---
     log(f"3/{steps} solving routes ...")
@@ -695,7 +857,7 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         if start and end and calibrated:
             pairs = [(station_names.index(start), station_names.index(end))]
         else:
-            min_gap = 150 if calibrated else 10
+            min_gap = 10
             pairs = [(i, j) for i in range(ns) for j in range(i + 1, ns)
                      if D[i, j] > min_gap]
             pairs = pairs or [(0, ns - 1)]
@@ -709,8 +871,8 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
             key="station_to_station", order=orderA, bird=lenA,
             name=f"Hofflohmaerkte {station_names[sA]} to {station_names[eA]}",
             title=f"Route: {station_names[sA]} (S) -> {station_names[eA]} (Z)"))
-        suffix = f"{lenA/1000:.2f} km" if calibrated else f"{lenA:.0f} px"
-        log(f"    A  {station_names[sA]} -> {station_names[eA]}: {suffix}")
+        log(f"    A  {station_names[sA]} -> {station_names[eA]}: "
+            f"{lenA:.0f} street px")
 
     # variant B: closed loop from/to one station node
     if ns >= 1:
@@ -722,8 +884,7 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
             key="loop", order=orderB, bird=lenB,
             name=f"Hofflohmaerkte loop from {station_names[depot]}",
             title=f"Rundweg ab/bis {station_names[depot]}"))
-        suffix = f"{lenB/1000:.2f} km" if calibrated else f"{lenB:.0f} px"
-        log(f"    B  loop from {station_names[depot]}: {suffix}")
+        log(f"    B  loop from {station_names[depot]}: {lenB:.0f} street px")
 
     # variant C: shortest free circle over dots only, no fixed start/end
     orderC, lenC = solve_circle(D, dot_idx)
@@ -731,10 +892,35 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         key="circle", order=orderC, bird=lenC,
         name="Hofflohmaerkte circular tour (dots only)",
         title="Rundtour ueber alle Hoefe (freier Start)"))
-    suffix = f"{lenC/1000:.2f} km" if calibrated else f"{lenC:.0f} px"
-    log(f"    C  free circle: {suffix}")
+    log(f"    C  free circle: {lenC:.0f} street px")
+
+    for variant in variants:
+        variant["graph_px"] = path_len(variant["order"], D)
+        variant["bird"] = path_len(variant["order"], straight_D)
+        variant["route_px"] = graph.route_geometry(
+            variant["order"], all_access)
+        validation = graph.validate_closed_route(
+            variant["order"], all_access, variant["route_px"])
+        expected_closed = variant["key"] in {"loop", "circle"}
+        if expected_closed and not validation.closed:
+            raise FlyerStreetError(
+                f"{variant['key']} route did not return to its start")
+        if (variant["key"] == "circle" and
+                validation.unique_stop_count != len(dots_px)):
+            raise FlyerStreetError(
+                "circular route does not contain every market marker")
+        variant["validation"] = validation
+        unique_order = (variant["order"][:-1]
+                        if validation.closed else variant["order"])
+        unique_order = list(dict.fromkeys(unique_order))
+        variant["access_spurs"] = [
+            (all_access[index].stop_xy, all_access[index].street_xy)
+            for index in unique_order
+        ]
 
     # --- 4-5. GPS exports (calibrated mode only) ---
+    gps_available = calibrated
+    gps_warning = None
     if calibrated:
         def stops_of(order):
             closed = order[0] == order[-1]
@@ -752,48 +938,59 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         for v in variants:
             v["stops"] = stops_of(v["order"])
 
-        log(f"4/{steps} fetching walking geometry (OSRM) ...")
-        for v in variants:
-            v["track"] = v["dist"] = v["dur"] = None
-            if use_osrm:
-                track, dist, dur = osrm_geometry(
+        try:
+            log(f"4/{steps} fetching walking geometry (OSRM) ...")
+            for v in variants:
+                track, dist, dur = router.route(
                     [(la, lo) for la, lo, _ in v["stops"]])
                 v["track"], v["dist"], v["dur"] = track, dist, dur
-                if dist:
-                    log(f"    {v['key']}: {dist/1000:.2f} km on streets "
-                        f"(~{dur/3600:.1f} h pure walking)")
+                log(f"    {v['key']}: {dist/1000:.2f} km on streets "
+                    f"(~{dur/3600:.1f} h pure walking)")
+        except StreetRoutingError as exc:
+            gps_available = False
+            gps_warning = f"GPS route unavailable: {exc}"
+            log(f"    {gps_warning}")
 
-        log(f"5/{steps} writing GPS exports ...")
-        triples = [(v["name"], v["stops"], v["track"]) for v in variants]
-        for v in variants:
-            write_gpx(out / f"route_{v['key']}.gpx", v["name"],
-                      v["stops"], v["track"])
-            write_kml(out / f"route_{v['key']}.kml", v["name"],
-                      v["stops"], v["track"])
-            v["gmaps"] = gmaps_overview_link(v["stops"])
-        write_geojson(out / "routes.geojson", triples)
-        write_html(out / "routes_map.html", "Hofflohmaerkte routes",
-                   triples, stations)
-        txt = ["# Google Maps - one walking link per route (whole route in one",
-               "# shot, downsampled to Google's 9-waypoint URL limit; import the",
-               "# .kml into Google My Maps for the exact full line).", ""]
-        for v in variants:
-            txt += [f"## {v['name']}", v["gmaps"], ""]
-        txt += ["# Appendix: exact stop-by-stop legs (9 waypoints per link)", ""]
-        for v in variants:
-            links = gmaps_links(v["stops"])
-            txt.append(f"## {v['name']} ({len(links)} legs)")
-            txt += [f"{k + 1}. {u}" for k, u in enumerate(links)]
-            txt.append("")
-        (out / "google_maps_links.txt").write_text("\n".join(txt))
+        if gps_available:
+            log(f"5/{steps} writing GPS exports ...")
+            triples = [
+                (v["name"], v["stops"], v["track"]) for v in variants
+            ]
+            for v in variants:
+                write_gpx(out / f"route_{v['key']}.gpx", v["name"],
+                          v["stops"], v["track"])
+                write_kml(out / f"route_{v['key']}.kml", v["name"],
+                          v["stops"], v["track"])
+                v["gmaps"] = gmaps_overview_link(v["stops"])
+            write_geojson(out / "routes.geojson", triples)
+            write_html(out / "routes_map.html", "Hofflohmaerkte routes",
+                       triples, stations)
+            txt = [
+                "# Google Maps - one walking link per route (whole route in one",
+                "# shot, downsampled to Google's 9-waypoint URL limit; import the",
+                "# .kml into Google My Maps for the exact full line).", "",
+            ]
+            for v in variants:
+                txt += [f"## {v['name']}", v["gmaps"], ""]
+            txt += [
+                "# Appendix: exact stop-by-stop legs (9 waypoints per link)", ""
+            ]
+            for v in variants:
+                links = gmaps_links(v["stops"])
+                txt.append(f"## {v['name']} ({len(links)} legs)")
+                txt += [f"{k + 1}. {url}" for k, url in enumerate(links)]
+                txt.append("")
+            (out / "google_maps_links.txt").write_text("\n".join(txt))
+    else:
+        gps_warning = "GPS route unavailable: no reliable map calibration"
 
     # --- last step: annotate PDFs + previews (both modes) ---
     log(f"{steps}/{steps} annotating PDFs + previews ...")
     fitz.open(pdf_path)[0].get_pixmap(dpi=110).save(out / "original.png")
     for v in variants:
         order_px = [node_to_px[n] for n in v["order"]]
-        if calibrated:
-            km = f"{(v.get('dist') or v['bird']) / 1000:.1f} km"
+        if gps_available and v.get("dist") is not None:
+            km = f"{v['dist'] / 1000:.1f} km"
             title_str = f"{v['title']} | {len(dots_px)} Hoefe | ~{km}"
         else:
             title_str = f"{v['title']} | {len(dots_px)} Hoefe"
@@ -801,38 +998,64 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         # Label every detected icon. Use the named station from calibration
         # when one is close (within 30 px); otherwise show a short type
         # label ("U" or "S").
-        _named = {(s["px"], s["py"]): s["name"] for s in stations} \
-                 if calibrated else {}
+        _named = [((s["px"], s["py"]), index, s["name"])
+                  for index, s in enumerate(stations)]
         station_labels = []
         for kind, x, y in detect_station_icons(img):
-            best_name, best_dist = None, float("inf")
-            for (sx, sy), sname in _named.items():
+            best_name, best_index, best_dist = None, None, float("inf")
+            for (sx, sy), station_index, station_name in _named:
                 d = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
                 if d < best_dist:
-                    best_dist, best_name = d, sname
-            label = best_name if best_dist < 30 else kind[0]
-            station_labels.append((float(x), float(y), label))
+                    best_dist = d
+                    best_name = station_name
+                    best_index = station_index
+            if best_dist >= 30:
+                best_name, best_index = f"{kind[0]}-Bahn", None
+            route_start, route_end = v["order"][0], v["order"][-1]
+            if best_index == route_start == route_end:
+                role = "start_end"
+            elif best_index == route_start:
+                role = "start"
+            elif best_index == route_end:
+                role = "end"
+            else:
+                role = None
+            station_labels.append({
+                "x": float(x), "y": float(y), "name": best_name,
+                "kind": kind[0], "role": role,
+            })
         station_labels = station_labels or None
         annotate_pdf(pdf_path, pdf_out, order_px, title_str, dpi=dpi,
-                     station_labels=station_labels)
+                     station_labels=station_labels, route_px=v["route_px"],
+                     access_spurs=v["access_spurs"])
         fitz.open(pdf_out)[0].get_pixmap(dpi=110).save(
             out / f"route_{v['key']}.png")
 
     return {
         "dots": len(dots_px),
         "fit_rms_m": round(rms, 1) if rms is not None else None,
+        "gps_available": gps_available,
+        "gps_warning": gps_warning,
         "variants": [{
             "key": v["key"], "name": v["name"],
             "bird_km": round(v["bird"] / 1000, 2) if calibrated else None,
+            "graph_px": round(v["graph_px"], 1),
             "street_km": round(v["dist"] / 1000, 2)
-                         if calibrated and v.get("dist") else None,
+                         if gps_available and v.get("dist") else None,
             "walk_h": round(v["dur"] / 3600, 1)
-                      if calibrated and v.get("dur") else None,
+                      if gps_available and v.get("dur") else None,
+            "closed": v["validation"].closed,
+            "unique_stops": v["validation"].unique_stop_count,
+            "access_spurs": len(v["access_spurs"]),
+            "max_access_spur_px": round(
+                v["validation"].max_access_distance_px, 1),
+            "max_road_offset_px": round(
+                v["validation"].max_mask_distance_px, 1),
             "pdf": f"route_{v['key']}.pdf",
-            "gpx": f"route_{v['key']}.gpx" if calibrated else None,
-            "kml": f"route_{v['key']}.kml" if calibrated else None,
+            "gpx": f"route_{v['key']}.gpx" if gps_available else None,
+            "kml": f"route_{v['key']}.kml" if gps_available else None,
             "png": f"route_{v['key']}.png",
-            "gmaps": v.get("gmaps") if calibrated else None,
+            "gmaps": v.get("gmaps") if gps_available else None,
         } for v in variants],
         "files": sorted(f.name for f in out.iterdir() if f.is_file()),
     }
@@ -850,8 +1073,6 @@ def main():
     ap.add_argument("--dpi", type=int, default=300)
     ap.add_argument("--start", help="force start station name")
     ap.add_argument("--end", help="force end station name")
-    ap.add_argument("--no-osrm", action="store_true",
-                    help="skip online walking-geometry lookup")
     ap.add_argument("--find-landmarks", action="store_true",
                     help="calibration helper: detect U/S station icons, write "
                          "calib_template.json + map_render.png, then exit")
@@ -866,16 +1087,13 @@ def main():
     if args.find_landmarks:
         find_landmarks(pdf_path, out, args.dpi)
         return
-    if args.calib:
-        calib = json.loads(Path(args.calib).read_text())
-    else:
-        calib = None
-        print("No --calib provided — running in pixel-only mode "
-              "(annotated PDFs only, no GPS exports).\n"
-              "Run --find-landmarks to create a calibration file.")
+    if not args.calib:
+        ap.error("--calib is required for street-following routes; "
+                 "run --find-landmarks first")
+    calib = json.loads(Path(args.calib).read_text())
 
     run_pipeline(pdf_path, calib, out, dpi=args.dpi, start=args.start,
-                 end=args.end, use_osrm=not args.no_osrm)
+                 end=args.end)
     print(f"\nDone -> {out}/")
     for f in sorted(out.iterdir()):
         print("   ", f.name)
