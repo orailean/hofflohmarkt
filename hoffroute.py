@@ -816,6 +816,12 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
 # pipeline
 # ----------------------------------------------------------------------------
 
+def unpack_station_resolution(result):
+    """Accept the structured resolver result while keeping list compatibility."""
+    if hasattr(result, "stations") and hasattr(result, "warnings"):
+        return list(result.stations), list(result.warnings)
+    return list(result or []), []
+
 def fetch_pdf(src, dest_dir):
     """Accept a local path or an http(s) URL. URLs are downloaded into
     dest_dir; returns the local Path either way."""
@@ -862,10 +868,21 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         if _icons:
             log("    resolving station names from transit data ...")
             try:
-                _resolved = resolve_stations(_icons, calib["control_points"])
+                _result = resolve_stations(_icons, calib["control_points"])
+                _resolved, _station_warnings = unpack_station_resolution(
+                    _result)
+                calib = dict(
+                    calib,
+                    station_warnings=(
+                        list(calib.get("station_warnings", [])) +
+                        _station_warnings
+                    ),
+                )
                 if _resolved:
                     calib = dict(calib, stations=_resolved)
                     log(f"    {len(_resolved)} station name(s) resolved")
+                for _warning in _station_warnings:
+                    log(f"    {_warning}")
             except Exception as _e:
                 log(f"    station name resolution failed: {_e}")
 
@@ -1109,6 +1126,8 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
     return {
         "dots": len(dots_px),
         "fit_rms_m": round(rms, 1) if rms is not None else None,
+        "station_warnings": list(calib.get("station_warnings", []))
+                            if calib else [],
         "gps_available": gps_available,
         "gps_warning": gps_warning,
         "variants": [{

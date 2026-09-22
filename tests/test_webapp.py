@@ -1,0 +1,109 @@
+import json
+from pathlib import Path
+import unittest
+from unittest import mock
+import urllib.parse
+
+import webapp
+
+
+TRANSIT_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures/aubing_transit_candidates.json")
+    .read_text(encoding="utf-8"))
+
+
+class RouteCacheTests(unittest.TestCase):
+    def test_cache_key_changes_with_selected_route_endpoints(self):
+        calibration = {
+            "control_points": [
+                {"px": 0, "py": 0, "lat": 48, "lon": 11},
+                {"px": 1, "py": 0, "lat": 48, "lon": 12},
+                {"px": 0, "py": 1, "lat": 49, "lon": 11},
+            ]
+        }
+
+        first = webapp.route_cache_dir(
+            "abcdef", calibration, start="West", end="East")
+        reversed_route = webapp.route_cache_dir(
+            "abcdef", calibration, start="East", end="West")
+
+        self.assertNotEqual(first, reversed_route)
+
+
+class TransitProviderTests(unittest.TestCase):
+    def test_overpass_query_uses_one_expanded_district_bounding_box(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"elements":[]}'
+
+        with mock.patch(
+            "webapp.urllib.request.urlopen", return_value=response
+        ) as open_url:
+            webapp.overpass_transit_candidates(
+                "Aubing, München", TRANSIT_FIXTURE["control_points"],
+                TRANSIT_FIXTURE["icons"],
+            )
+
+        request = open_url.call_args.args[0]
+        query = urllib.parse.parse_qs(request.data.decode())["data"][0]
+        self.assertNotIn("around:", query)
+        self.assertRegex(
+            query,
+            r'node\(48\.12\d+,11\.3\d+,48\.18\d+,11\.4\d+\)',
+        )
+
+    def test_transit_resolution_uses_nominatim_after_overpass_failure(self):
+        with mock.patch(
+            "webapp.overpass_transit_candidates",
+            side_effect=TimeoutError("Overpass timed out"),
+        ), mock.patch(
+            "webapp.nominatim_transit_candidates",
+            return_value=TRANSIT_FIXTURE["elements"],
+        ):
+            result = webapp.transit_stations_from_icons(
+                TRANSIT_FIXTURE["icons"],
+                TRANSIT_FIXTURE["control_points"],
+                "Aubing, München",
+            )
+
+        self.assertEqual(
+            [station["name"] for station in result.stations],
+            ["Aubing", "Leienfelsstraße"],
+        )
+        self.assertEqual(result.warnings, [])
+
+    def test_auto_calibration_persists_station_names_and_warnings(self):
+        candidates = [
+            {"name": "One", "px": 10, "py": 10},
+            {"name": "Two", "px": 20, "py": 10},
+            {"name": "Three", "px": 10, "py": 20},
+        ]
+        geocoded = [(48.0, 11.0), (48.0, 11.1), (48.1, 11.0)]
+        resolution = webapp.station_names.StationResolution(
+            stations=[{
+                "name": "Aubing", "mode": "S", "px": 10.0, "py": 10.0,
+                "lat": 48.1559713, "lon": 11.4131591,
+                "osm_id": "node/2488173642",
+            }],
+            warnings=["Station name unavailable for one transit icon"],
+        )
+
+        with mock.patch("webapp.extract_text_lines", return_value=[]), \
+             mock.patch("webapp.detect_autocalib_context",
+                        return_value="Aubing, München"), \
+             mock.patch("webapp.map_label_candidates",
+                        return_value=candidates), \
+             mock.patch("webapp.geocode_one", side_effect=geocoded), \
+             mock.patch("webapp.fit_auto_points", side_effect=lambda p: p), \
+             mock.patch("webapp.transit_stations_from_icons",
+                        return_value=resolution):
+            calibration = webapp.auto_calibrate(
+                Path("map.pdf"), 300, Path("map.png"),
+                TRANSIT_FIXTURE["icons"], [(20, 20)], 400, 300,
+            )
+
+        self.assertEqual(calibration["stations"][0]["name"], "Aubing")
+        self.assertEqual(calibration["station_warnings"], resolution.warnings)
+
+
+if __name__ == "__main__":
+    unittest.main()

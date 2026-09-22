@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 import fitz
@@ -331,6 +332,17 @@ class PipelineTests(unittest.TestCase):
             ],
             "stations": [],
         }
+
+    def test_station_resolver_result_preserves_names_and_warnings(self):
+        result = SimpleNamespace(
+            stations=[{"name": "Aubing"}],
+            warnings=["Station name unavailable for one transit icon"],
+        )
+
+        stations, warnings = hr.unpack_station_resolution(result)
+
+        self.assertEqual(stations, result.stations)
+        self.assertEqual(warnings, result.warnings)
 
     def test_pipeline_without_georeferencing_still_writes_flyer_route(self):
         with tempfile.TemporaryDirectory() as temp:
