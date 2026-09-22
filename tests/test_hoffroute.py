@@ -344,6 +344,33 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(stations, result.stations)
         self.assertEqual(warnings, result.warnings)
 
+    def test_pipeline_station_retry_uses_calibration_context(self):
+        contexts = []
+
+        def resolve(_icons, _control_points, context):
+            contexts.append(context)
+            return SimpleNamespace(stations=[], warnings=[])
+
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            pdf = temp_path / "map.pdf"
+            self._write_map_pdf(pdf)
+            calibration = dict(
+                self._calibration(), stations=[], context="Aubing, Germany")
+
+            with mock.patch(
+                "hoffroute.detect_station_icons",
+                return_value=[("S-Bahn (green icon)", 10, 10)],
+            ):
+                hr.run_pipeline(
+                    pdf, calibration, temp_path / "out", dpi=72,
+                    street_router=FakeStreetRouter(),
+                    resolve_stations=resolve,
+                    log=lambda _message: None,
+                )
+
+        self.assertEqual(contexts, ["Aubing, Germany"])
+
     def test_generic_transit_mode_is_not_rendered_as_station_name(self):
         labels, warnings = hr.station_labels_for_icons(
             [("S-Bahn (green icon)", 100, 100)], stations=[])

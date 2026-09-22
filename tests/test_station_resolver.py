@@ -38,6 +38,21 @@ class StationResolverTests(unittest.TestCase):
 
         self.assertEqual(len(result.stations), 2)
 
+    def test_uses_second_provider_when_first_candidates_do_not_resolve(self):
+        result = resolve_station_icons(
+            FIXTURE["icons"], FIXTURE["control_points"], "Aubing, München",
+            candidate_providers=[
+                lambda *_args: FIXTURE["elements"][:1],
+                lambda *_args: FIXTURE["elements"],
+            ],
+        )
+
+        self.assertEqual(
+            [station["name"] for station in result.stations],
+            ["Aubing", "Leienfelsstraße"],
+        )
+        self.assertEqual(result.warnings, [])
+
     def test_unresolved_icon_gets_warning_not_generic_station_name(self):
         result = resolve_station_icons(
             FIXTURE["icons"][:1], FIXTURE["control_points"],

@@ -6,18 +6,17 @@ Hofflohmaerkte map PDF.
 Pipeline:
   1. Render the PDF page and detect the red/pink market dots (color threshold
      + distance-transform peak splitting for touching dots).
-  2. Georeference pixel coords -> WGS84 with an affine fit over control points
-     from a calibration JSON (e.g. U/S-Bahn station icons).
-  3. Solve the TSP for up to three variants:
+  2. Extract the printed street network and connect every market marker to it.
+  3. Solve the TSP on that flyer graph for up to three variants:
        A. open path between two stations (best pair, or --start/--end)
        B. closed loop from/to one station
        C. shortest free circle over the dots only (no fixed start/end;
           always produced, and the only variant if no stations are given)
-  4. Fetch real walking distances and geometry from the public FOSSGIS OSRM
-     foot router. Walking distances drive the route order.
-  5. Export: GPX (waypoints + route + track), GeoJSON, chunked Google Maps
-     links, a self-contained Leaflet HTML map, and the original PDF with the
-     route drawn on top (one annotated PDF per variant).
+  4. Draw the flyer-graph route on the PDF. With calibration, georeference the
+     same stop order and fetch walking geometry from the free FOSSGIS OSRM
+     foot router for GPS exports.
+  5. Export: annotated PDF/PNG and, when GPS routing validates, GPX, KML,
+     GeoJSON, Google Maps links, and a self-contained Leaflet HTML map.
 
 Calibration JSON format:
 {
@@ -905,7 +904,8 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         if _icons:
             log("    resolving station names from transit data ...")
             try:
-                _result = resolve_stations(_icons, calib["control_points"])
+                _result = resolve_stations(
+                    _icons, calib["control_points"], calib.get("context"))
                 _resolved, _station_warnings = unpack_station_resolution(
                     _result)
                 calib = dict(

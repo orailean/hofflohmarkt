@@ -84,6 +84,12 @@ AUTOCALIB_TRANSIT_TIMEOUT_S = int(os.environ.get(
     "HOFFROUTE_AUTOCALIB_TRANSIT_TIMEOUT_S", "20"))
 OVERPASS_URL = os.environ.get(
     "HOFFROUTE_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+OVERPASS_URLS = tuple(dict.fromkeys(
+    url.strip() for url in os.environ.get(
+        "HOFFROUTE_OVERPASS_URLS",
+        f"{OVERPASS_URL},https://overpass.kumi.systems/api/interpreter",
+    ).split(",") if url.strip()
+))
 TESSERACT_CMD = os.environ.get("HOFFROUTE_TESSERACT_CMD") or shutil.which(
     "tesseract")
 TESSERACT_LANG = os.environ.get("HOFFROUTE_TESSERACT_LANG", "deu+eng")
@@ -762,29 +768,61 @@ def overpass_transit_candidates(context, control_points, icons):
 out center body 100;
 """
     data = urllib.parse.urlencode({"data": query}).encode()
-    req = urllib.request.Request(
-        OVERPASS_URL,
-        data=data,
-        headers={"User-Agent": "hoffroute/1.0 (auto calibration)"})
-    with urllib.request.urlopen(req, timeout=12, context=hr.SSL_CTX) as r:
-        payload = json.loads(r.read())
-    return payload.get("elements", [])
+    last_error = None
+    for endpoint in OVERPASS_URLS:
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={"User-Agent": "hoffroute/1.0 (auto calibration)"})
+        try:
+            with urllib.request.urlopen(
+                req, timeout=8, context=hr.SSL_CTX
+            ) as response:
+                payload = json.loads(response.read())
+            return payload.get("elements", [])
+        except (OSError, TimeoutError, ValueError) as exc:
+            last_error = exc
+            LOGGER.warning(
+                "transit lookup endpoint failed endpoint=%s error=%s",
+                endpoint, exc)
+    if last_error is not None:
+        raise last_error
+    return []
 
 
 def nominatim_transit_candidates(context, control_points, icons):
     elements = []
     modes = sorted({"U" if kind.startswith("U-Bahn") else "S"
                     for kind, _px, _py in icons})
+    south, west, north, east = _expanded_control_bounds(control_points)
+    viewbox = f"{west:.7f},{north:.7f},{east:.7f},{south:.7f}"
+    seen = set()
+    searches = []
     for mode in modes:
-        params = urllib.parse.urlencode({
-            "q": f"{mode}-Bahn {context}",
+        searches.append((mode, f"{mode}-Bahn {context}", False))
+        if mode == "S":
+            searches.extend((
+                (mode, "Bahnhof", True),
+                (mode, "Haltepunkt", True),
+            ))
+        elif mode == "U":
+            searches.append((mode, "U-Bahnhof", True))
+
+    for search_index, (mode, query, bounded) in enumerate(searches):
+        options = {
+            "q": query,
             "format": "jsonv2",
             "limit": 50,
             "addressdetails": 1,
-        })
+        }
+        if bounded:
+            options.update({"viewbox": viewbox, "bounded": 1})
+        params = urllib.parse.urlencode(options)
         req = urllib.request.Request(
             f"https://nominatim.openstreetmap.org/search?{params}",
             headers={"User-Agent": "hoffroute/1.0 (station resolver)"})
+        if search_index:
+            time.sleep(1.0)
         with urllib.request.urlopen(
             req, timeout=8, context=hr.SSL_CTX
         ) as response:
@@ -795,6 +833,10 @@ def nominatim_transit_candidates(context, control_points, icons):
             if category not in {"railway", "public_transport"} and \
                     result_type not in {"station", "halt"}:
                 continue
+            identity = (result.get("osm_type"), result.get("osm_id"))
+            if identity in seen:
+                continue
+            seen.add(identity)
             elements.append({
                 "type": result.get("osm_type", "item"),
                 "id": result.get("osm_id", result.get("place_id")),
@@ -903,6 +945,7 @@ def auto_calibrate(pdf: Path, dpi: int, image_path: Path, icons, dots,
     calib = {
         "comment": "Auto-generated from embedded PDF text and Nominatim. "
                    "Review before relying on exact distances.",
+        "context": context,
         "map_bbox_px": auto_bbox(dots, width, height),
         "control_points": control_points,
         "stations": station_resolution.stations,

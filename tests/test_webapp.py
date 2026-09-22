@@ -86,6 +86,34 @@ class TransitProviderTests(unittest.TestCase):
             r'node\(48\.12\d+,11\.3\d+,48\.18\d+,11\.4\d+\)',
         )
 
+    def test_overpass_query_retries_a_second_free_endpoint(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "elements": TRANSIT_FIXTURE["elements"],
+        }).encode()
+
+        with mock.patch.object(
+            webapp,
+            "OVERPASS_URLS",
+            ("https://primary.example/interpreter",
+             "https://fallback.example/interpreter"),
+        ), mock.patch(
+            "webapp.urllib.request.urlopen",
+            side_effect=[TimeoutError("primary timed out"), response],
+        ) as open_url:
+            candidates = webapp.overpass_transit_candidates(
+                "Aubing, München", TRANSIT_FIXTURE["control_points"],
+                TRANSIT_FIXTURE["icons"],
+            )
+
+        self.assertEqual(candidates, TRANSIT_FIXTURE["elements"])
+        self.assertEqual(open_url.call_count, 2)
+        self.assertEqual(
+            [call.args[0].full_url for call in open_url.call_args_list],
+            ["https://primary.example/interpreter",
+             "https://fallback.example/interpreter"],
+        )
+
     def test_transit_resolution_uses_nominatim_after_overpass_failure(self):
         with mock.patch(
             "webapp.overpass_transit_candidates",
@@ -105,6 +133,56 @@ class TransitProviderTests(unittest.TestCase):
             ["Aubing", "Leienfelsstraße"],
         )
         self.assertEqual(result.warnings, [])
+
+    def test_nominatim_searches_station_types_inside_control_bounds(self):
+        def response(results):
+            value = mock.MagicMock()
+            value.__enter__.return_value.read.return_value = json.dumps(
+                results).encode()
+            return value
+
+        aubing, leienfels = TRANSIT_FIXTURE["elements"][:2]
+
+        def nominatim_result(element):
+            return {
+                "osm_type": element["type"],
+                "osm_id": element["id"],
+                "lat": str(element["lat"]),
+                "lon": str(element["lon"]),
+                "category": "railway",
+                "type": element["tags"]["railway"],
+                "name": element["tags"]["name"],
+                "display_name": element["tags"]["name"],
+            }
+
+        with mock.patch(
+            "webapp.urllib.request.urlopen",
+            side_effect=[
+                response([]),
+                response([nominatim_result(leienfels)]),
+                response([nominatim_result(aubing)]),
+            ],
+        ) as open_url, mock.patch("webapp.time.sleep"):
+            candidates = webapp.nominatim_transit_candidates(
+                "Aubing, München", TRANSIT_FIXTURE["control_points"],
+                TRANSIT_FIXTURE["icons"],
+            )
+
+        self.assertEqual(
+            {item["tags"]["name"] for item in candidates},
+            {"Aubing", "Leienfelsstraße"},
+        )
+        queries = [
+            urllib.parse.parse_qs(
+                urllib.parse.urlparse(call.args[0].full_url).query)
+            for call in open_url.call_args_list
+        ]
+        self.assertEqual(
+            [query["q"][0] for query in queries],
+            ["S-Bahn Aubing, München", "Bahnhof", "Haltepunkt"],
+        )
+        self.assertTrue(all("viewbox" in query and query["bounded"] == ["1"]
+                            for query in queries[1:]))
 
     def test_auto_calibration_persists_station_names_and_warnings(self):
         candidates = [
@@ -138,6 +216,7 @@ class TransitProviderTests(unittest.TestCase):
 
         self.assertEqual(calibration["stations"][0]["name"], "Aubing")
         self.assertEqual(calibration["station_warnings"], resolution.warnings)
+        self.assertEqual(calibration["context"], "Aubing, München")
 
 
 if __name__ == "__main__":

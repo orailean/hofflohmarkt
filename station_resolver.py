@@ -205,7 +205,7 @@ def _match(icons, control_points, context, candidates):
 def resolve_station_icons(icons, control_points, context,
                           candidate_providers):
     """Resolve all icons jointly, trying free-data providers in order."""
-    elements = []
+    all_elements = []
     provider_errors = []
     for provider in candidate_providers:
         try:
@@ -213,11 +213,16 @@ def resolve_station_icons(icons, control_points, context,
         except Exception as exc:
             provider_errors.append(str(exc))
             continue
-        if elements:
-            break
-    if not elements:
+        if not elements:
+            continue
+        all_elements.extend(elements)
+        result = _match(
+            icons, control_points, context, _deduplicate(elements))
+        if result.stations:
+            return result
+    if not all_elements:
         detail = f" ({'; '.join(provider_errors)})" if provider_errors else ""
         return StationResolution([], [
             f"Station name unavailable for detected transit icon{detail}"
         ])
-    return _match(icons, control_points, context, _deduplicate(elements))
+    return _match(icons, control_points, context, _deduplicate(all_elements))
