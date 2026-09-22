@@ -68,7 +68,7 @@ ROUTE_CACHE_DIR = Path(os.environ.get(
 ROUTE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PDF_BYTES = 50 * 1024 * 1024
 RENDER_DPI = 300
-ROUTE_CACHE_VERSION = "flyer-streets-v2"
+ROUTE_CACHE_VERSION = "flyer-streets-v3"
 CALIB_CACHE_VERSION = "station-resolver-v1"
 AUTOCALIB_CONTEXT = os.environ.get(
     "HOFFROUTE_AUTOCALIB_CONTEXT", "Germany")

@@ -36,7 +36,7 @@ class RouteCacheTests(unittest.TestCase):
         with mock.patch.object(webapp, "ROUTE_CACHE_VERSION", "street-v2"):
             legacy = webapp.route_cache_dir("abcdef", calibration)
 
-        self.assertEqual(webapp.ROUTE_CACHE_VERSION, "flyer-streets-v2")
+        self.assertEqual(webapp.ROUTE_CACHE_VERSION, "flyer-streets-v3")
         self.assertNotEqual(current, legacy)
 
     def test_calibration_cache_version_invalidates_old_station_names(self):

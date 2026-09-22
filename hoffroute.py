@@ -795,7 +795,7 @@ def directional_route_geometry(route_px, lane_offset_px=6,
 
 def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.41),
                  dpi=300, station_labels=None, route_px=None,
-                 access_spurs=None):
+                 access_spurs=None, map_bbox_px=None):
     """Draw the route polyline + stop numbers onto page 0 of the PDF."""
     s = 72.0 / dpi  # px -> pdf points
     doc = fitz.open(src_doc_path)
@@ -813,12 +813,18 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     closed = order_px[0] == order_px[-1]
     if access_spurs:
         spur_shape = page.new_shape()
+        access_shape = page.new_shape()
         for (ax, ay), (bx, by) in access_spurs:
             spur_shape.draw_line(
                 fitz.Point(ax * s, ay * s), fitz.Point(bx * s, by * s))
-        spur_shape.finish(color=(0.11, 0.46, 0.84), width=1.1,
-                          dashes="[2 2]", stroke_opacity=0.65)
+            access_shape.draw_circle(fitz.Point(bx * s, by * s), 1.4)
+        spur_shape.finish(color=(0.04, 0.35, 0.72), width=1.5,
+                          dashes="[3 2]", stroke_opacity=0.95)
         spur_shape.commit()
+        access_shape.finish(
+            color=(0.04, 0.25, 0.55), fill=(0.04, 0.25, 0.55),
+            width=0.3, stroke_opacity=0.95, fill_opacity=0.95)
+        access_shape.commit()
 
     shape = page.new_shape()
     shape.draw_polyline(route_pts)
@@ -855,66 +861,76 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     if not closed:
         draw_flag(pts[-1], (0.80, 0.10, 0.10))
 
-    # Explicit station labels. The flyer often prints only U/S icons, so draw
-    # the resolved station names onto the annotated output.
+    # Keep full station names away from routes and market dots. The original
+    # flyer icons remain visible on the map; names and route roles live in a
+    # compact legend below the detected map area.
     if station_labels:
+        unique_stations = []
+        seen_stations = set()
         for station in station_labels:
             if isinstance(station, dict):
-                x, y = station["x"], station["y"]
                 name = str(station["name"])
                 kind = str(station.get("kind", "")).upper()
                 role = station.get("role")
             else:
-                x, y, name = station
+                _x, _y, name = station
                 kind, role = "", None
-            p = fitz.Point(x * s, y * s)
+            identity = (kind, name, role)
+            if identity not in seen_stations:
+                seen_stations.add(identity)
+                unique_stations.append(identity)
+
+        columns = min(3, max(1, math.ceil(len(unique_stations) / 3)))
+        rows = math.ceil(len(unique_stations) / columns)
+        legend_height = 15 + rows * 12
+        entry_labels = []
+        for kind, name, role in unique_stations:
             transit = f"{kind}-BAHN" if kind in {"S", "U"} else "STATION"
             role_text = {
                 "start": "START",
                 "end": "ZIEL",
                 "start_end": "START / ZIEL",
             }.get(role)
-            header = f"{role_text} · {transit}" if role_text else transit
-            accent = {
-                "start": (0.13, 0.55, 0.13),
-                "end": (0.80, 0.10, 0.10),
-                "start_end": (0.16, 0.45, 0.75),
-            }.get(role, (0.16, 0.45, 0.75))
-            name_size = 8.0
-            while (fitz.get_text_length(name, fontname="hebo", fontsize=name_size)
-                   > 126 and name_size > 6.5):
-                name_size -= 0.5
-            header_size = 5.8
-            pad_x = 4.0
-            width = min(136, max(
-                76,
-                fitz.get_text_length(name, fontname="hebo", fontsize=name_size)
-                + 2 * pad_x,
-                fitz.get_text_length(header, fontname="hebo", fontsize=header_size)
-                + 2 * pad_x,
-            ))
-            height = 27.0
-            if p.x + 8 + width <= page.rect.width - 4:
-                left = p.x + 8
-            else:
-                left = max(4, p.x - width - 8)
-            top = min(max(p.y - height / 2, 4), page.rect.height - height - 20)
-            rect = fitz.Rect(left, top, left + width, top + height)
-            sh = page.new_shape()
-            edge = fitz.Point(rect.x0 if left > p.x else rect.x1,
-                              rect.y0 + height / 2)
-            sh.draw_line(p, edge)
-            sh.finish(color=accent, width=1.1)
-            sh.draw_rect(rect)
-            sh.finish(color=accent, fill=(1, 1, 1),
-                      width=1.0, fill_opacity=0.94, stroke_opacity=1)
-            sh.commit()
+            label = f"{transit}  {name}"
+            if role_text:
+                label += f" - {role_text}"
+            entry_labels.append(label)
+        if columns == 1:
+            widest = max(
+                fitz.get_text_length(label, fontname="hebo", fontsize=7.2)
+                for label in entry_labels)
+            legend_width = min(page.rect.width - 10, max(150, widest + 12))
+        else:
+            legend_width = page.rect.width - 10
+        map_bottom = (float(map_bbox_px[3]) * s
+                      if map_bbox_px else page.rect.height - legend_height - 20)
+        legend_top = min(
+            max(5, map_bottom + 5),
+            page.rect.height - legend_height - 18,
+        )
+        legend_rect = fitz.Rect(
+            5, legend_top, 5 + legend_width,
+            legend_top + legend_height)
+        legend_shape = page.new_shape()
+        legend_shape.draw_rect(legend_rect)
+        legend_shape.finish(
+            color=(0.16, 0.45, 0.75), fill=(1, 1, 1), width=0.8,
+            fill_opacity=0.88, stroke_opacity=0.9)
+        legend_shape.commit()
+        page.insert_text(
+            fitz.Point(legend_rect.x0 + 5, legend_rect.y0 + 9),
+            "STATIONEN / TRANSIT", fontsize=6.2, fontname="hebo",
+            color=(0.16, 0.45, 0.75))
+        column_width = legend_rect.width / columns
+        for index, label in enumerate(entry_labels):
+            column = index // rows
+            row = index % rows
             page.insert_text(
-                fitz.Point(rect.x0 + pad_x, rect.y0 + 8), header,
-                fontsize=header_size, fontname="hebo", color=accent)
-            page.insert_text(
-                fitz.Point(rect.x0 + pad_x, rect.y0 + 20), name,
-                fontsize=name_size, fontname="hebo",
+                fitz.Point(
+                    legend_rect.x0 + 5 + column * column_width,
+                    legend_rect.y0 + 20 + row * 12,
+                ),
+                label, fontsize=7.2, fontname="hebo",
                 color=(0.05, 0.05, 0.05))
 
     # stop numbers (skip start/end stations)
@@ -1221,7 +1237,7 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         station_labels = station_labels or None
         annotate_pdf(pdf_path, pdf_out, order_px, title_str, dpi=dpi,
                      station_labels=station_labels, route_px=v["route_px"],
-                     access_spurs=v["access_spurs"])
+                     access_spurs=v["access_spurs"], map_bbox_px=bbox)
         fitz.open(pdf_out)[0].get_pixmap(dpi=110).save(
             out / f"route_{v['key']}.png")
 

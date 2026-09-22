@@ -436,13 +436,19 @@ class PipelineTests(unittest.TestCase):
                 if drawing["color"] is not None
                 and np.allclose(drawing["color"], (0.11, 0.46, 0.84))
             ]
+            access_drawings = [
+                drawing for drawing in document[0].get_drawings()
+                if drawing["color"] is not None
+                and np.allclose(drawing["color"], (0.04, 0.35, 0.72))
+            ]
             route_bounds = max(
                 (drawing["rect"] for drawing in route_drawings),
                 key=lambda rect: rect.get_area(),
             )
             document.close()
 
-        self.assertGreaterEqual(len(route_drawings), 2)
+        self.assertGreaterEqual(len(route_drawings), 1)
+        self.assertGreaterEqual(len(access_drawings), 1)
         self.assertLess(route_bounds.x1, 250)
         self.assertLess(route_bounds.y1, 250)
 
@@ -462,7 +468,7 @@ class PipelineTests(unittest.TestCase):
                       if v["key"] == "circle")
         self.assertEqual(circle["max_snap_distance_m"], 54.0)
 
-    def test_station_callout_names_the_station_and_its_route_role(self):
+    def test_station_legend_names_station_below_map_without_covering_route(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "source.pdf"
             output = Path(temp) / "annotated.pdf"
@@ -481,6 +487,7 @@ class PipelineTests(unittest.TestCase):
                     "kind": "S",
                     "role": "start",
                 }],
+                map_bbox_px=[0, 0, 600, 300],
             )
 
             document = fitz.open(output)
@@ -500,7 +507,8 @@ class PipelineTests(unittest.TestCase):
         station_span = next(
             span for span in spans if "Aubing Bahnhof" in span["text"]
         )
-        self.assertGreaterEqual(station_span["size"], 8)
+        self.assertGreater(station_span["bbox"][1], 300)
+        self.assertGreaterEqual(station_span["size"], 7)
 
 
 class CliTests(unittest.TestCase):

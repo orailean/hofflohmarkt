@@ -154,7 +154,7 @@ Options:
 
 | File | What it is |
 |------|------------|
-| `route_station_to_station.pdf` | original flyer with the street-following route, numbered stops, and readable station callouts identifying **START** and **ZIEL** |
+| `route_station_to_station.pdf` | original flyer with the street-following route, numbered stops, prominent courtyard-access connectors, and a separate station legend identifying **START** and **ZIEL** |
 | `route_loop.pdf` | same, for the station loop variant |
 | `route_circle.pdf` | same, for the free circular tour (single green marker — start anywhere) |
 | `route_*.gpx` | waypoints in visiting order + street-following track; import into Komoot, OsmAnd, Organic Maps, Garmin |
