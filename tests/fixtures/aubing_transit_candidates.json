@@ -1,0 +1,45 @@
+{
+  "icons": [
+    ["S-Bahn (green icon)", 253.1, 1640.2],
+    ["S-Bahn (green icon)", 1427.2, 1750.2]
+  ],
+  "control_points": [
+    {"name": "Englburgstr", "px": 2133.0, "py": 1550.0, "lat": 48.1565633, "lon": 11.4360312},
+    {"name": "& Stolzeneckstr", "px": 1899.5, "py": 1642.0, "lat": 48.155751, "lon": 11.433754},
+    {"name": "Saldenburgstr", "px": 2261.5, "py": 1843.0, "lat": 48.1543736, "lon": 11.4366972},
+    {"name": "Lichtenfelser Str", "px": 1748.0, "py": 1848.5, "lat": 48.1535681, "lon": 11.4323013},
+    {"name": "' Maintalstr", "px": 917.0, "py": 1929.0, "lat": 48.1530857, "lon": 11.4305079}
+  ],
+  "elements": [
+    {
+      "type": "node", "id": 2488173642,
+      "lat": 48.1559713, "lon": 11.4131591,
+      "tags": {"name": "Aubing", "railway": "halt", "train": "yes", "network": "S-Bahn München"}
+    },
+    {
+      "type": "node", "id": 2488177587,
+      "lat": 48.1545345, "lon": 11.4285800,
+      "tags": {"name": "Leienfelsstraße", "railway": "station", "train": "yes", "network": "S-Bahn München"}
+    },
+    {
+      "type": "way", "id": 910001,
+      "center": {"lat": 48.1545480, "lon": 11.4286010},
+      "tags": {"name": "Leienfelsstraße", "public_transport": "platform", "train": "yes", "network": "S-Bahn München"}
+    },
+    {
+      "type": "node", "id": 910002,
+      "lat": 48.1490300, "lon": 11.4234100,
+      "tags": {"name": "Neuaubing", "railway": "halt", "train": "yes", "network": "S-Bahn München"}
+    },
+    {
+      "type": "node", "id": 910003,
+      "lat": 48.1498100, "lon": 11.4619000,
+      "tags": {"name": "Pasing", "railway": "station", "train": "yes", "network": "S-Bahn München"}
+    },
+    {
+      "type": "node", "id": 910004,
+      "lat": 48.1538025, "lon": 11.4138536,
+      "tags": {"name": "Aubing Bahnhof", "highway": "bus_stop", "bus": "yes"}
+    }
+  ]
+}

@@ -14,22 +14,33 @@ Up to three route variants are produced:
    fixed start or end point; begin anywhere on the circle. Always produced —
    and the only variant if the calibration file lists no stations.
 
-The script is map-agnostic: feed it a different district's flyer each time,
-the only per-map input is the calibration file (see below).
+The script is map-agnostic: feed it a different district's flyer each time.
+The printed-flyer route works directly from the PDF; calibration adds named
+station variants and geographic navigation exports.
 
 ## How it works
 
 1. Renders the PDF page and detects the red/pink market dots by color
    (touching dots are split via distance-transform peaks; isolated courtyards
    are kept unless they match the magenta legend-marker pattern).
-2. Georeferences pixel positions to GPS coordinates with an affine fit over
-   control points from a calibration file (the U/S-Bahn station icons on the
-   map, matched to their real-world coordinates).
-3. Solves the traveling-salesman problem (nearest neighbor + 2-opt + Or-opt).
-4. Fetches the real street-following walking geometry and distance from the
-   public [FOSSGIS OSRM](https://routing.openstreetmap.de) foot router
-   (skipped with `--no-osrm`).
-5. Writes all exports (see below).
+2. Extracts the pale-blue street network printed on the flyer, connects every
+   accepted market dot to it with a short access spur, and builds a routing
+   graph from that network.
+3. Solves the visiting order on that graph (nearest neighbor + 2-opt +
+   Or-opt). PDF routes always follow the printed streets, visit every detected
+   market dot, and close the loop for the loop/circle variants. Direction
+   arrows show which way to walk; a street used in both directions is drawn
+   as two parallel lanes so the outgoing and return legs remain visible.
+4. When calibration is available, georeferences the same ordered stops and
+   asks the public [FOSSGIS OSRM](https://routing.openstreetmap.de) foot router
+   for real OpenStreetMap walking geometry. The GPS route is checked for
+   closure and excessive waypoint snapping before it is exported.
+5. Writes the flyer PDF/PNG route and, when geographic validation succeeds,
+   GPX, KML, GeoJSON, web-map, and navigation-link exports.
+
+The application uses only local processing and free OpenStreetMap services;
+there is no paid routing or geocoding dependency. Street-following behavior
+is automatic and is not a configuration option.
 
 ## Setup
 
@@ -70,8 +81,10 @@ back to OCR when Tesseract is available, geocodes likely street and place
 labels with Nominatim, and keeps only points that fit a consistent affine
 transform. U-/S-Bahn icons are not named from nearby street text. Once the map
 is georeferenced, the app looks up named transit stops near those icon
-positions in OpenStreetMap/Overpass and only adds a station when a named
-transit feature is found.
+positions in a district-wide OpenStreetMap/Overpass search, matches all icons
+as one layout, and only adds a station when a unique named transit feature is
+found. It retries a second free Overpass endpoint and then uses a bounded
+Nominatim search if Overpass is unavailable or ambiguous.
 
 Manual calibration is available only after logging in with a user from
 `HOFFROUTE_MANUAL_USERS`. Authenticated users can edit/import/export the
@@ -86,7 +99,7 @@ To remove a cached calibration, log in, open **Calibration**, and click
 current PDF hash and the current job's local `calib.json`, then resets the
 manual calibration form. You can also remove cache files directly from
 `HOFFROUTE_CALIB_CACHE_DIR` (`calibration_cache/` by default); files are named
-`<pdf-sha256>.json`.
+`<pdf-sha256>_station-resolver-v1.json`.
 
 Calibration-related environment variables:
 
@@ -103,6 +116,7 @@ Calibration-related environment variables:
 | `HOFFROUTE_AUTOCALIB_INLIER_M` | `180` | residual threshold for auto-calibration inliers |
 | `HOFFROUTE_AUTOCALIB_TRANSIT_RADIUS_M` | `500` | radius for named U-/S-Bahn lookup after georeferencing |
 | `HOFFROUTE_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass endpoint for transit stop lookup |
+| `HOFFROUTE_OVERPASS_URLS` | primary endpoint plus `https://overpass.kumi.systems/api/interpreter` | comma-separated free Overpass endpoints tried in order |
 | `HOFFROUTE_TESSERACT_CMD` | auto-detected | optional `tesseract` binary for OCR on bitmap-only flyers |
 | `HOFFROUTE_TESSERACT_LANG` | `deu+eng` | OCR languages; falls back to `eng` if the configured language pack is missing |
 | `HOFFROUTE_LOG_LEVEL` | `INFO` | stdout log level for the web app |
@@ -130,10 +144,9 @@ Options:
 
 | Flag | Meaning |
 |------|---------|
-| `--calib FILE` | calibration JSON (required, see below) |
+| `--calib FILE` | optional calibration JSON for station and GPS exports |
 | `-o DIR` | output directory (default `route_out`) |
 | `--start NAME` / `--end NAME` | force start/end station (names from the calibration file) |
-| `--no-osrm` | offline mode — skip the walking-geometry lookup, use straight lines |
 | `--dpi N` | render resolution (default 300; calibration pixel coords must match) |
 | `--find-landmarks` | calibration helper: detect the U/S station icons, write `calib_template.json` + `map_render.png`, exit (no `--calib` needed) |
 
@@ -141,7 +154,7 @@ Options:
 
 | File | What it is |
 |------|------------|
-| `route_station_to_station.pdf` | original flyer with the route drawn on it — blue line, numbered stops, green **S** = start, red **Z** = end |
+| `route_station_to_station.pdf` | original flyer with the street-following route, numbered stops, prominent courtyard-access connectors, and a separate station legend identifying **START** and **ZIEL** |
 | `route_loop.pdf` | same, for the station loop variant |
 | `route_circle.pdf` | same, for the free circular tour (single green marker — start anywhere) |
 | `route_*.gpx` | waypoints in visiting order + street-following track; import into Komoot, OsmAnd, Organic Maps, Garmin |
@@ -151,8 +164,15 @@ Options:
 | `google_maps_links.txt` | **one Google Maps walking link per route** (whole route in one shot, downsampled to Google's hard 9-waypoint URL limit), plus the exact stop-by-stop legs as an appendix |
 | `routes.geojson` | all routes + stops for GIS tools |
 
-All exports are walking-mode: the Google Maps links use `travelmode=walking`
-and the KML/GPX/HTML geometry comes from the OSRM **foot** router.
+All geographic exports are walking-mode: the Google Maps links use
+`travelmode=walking` and the KML/GPX/HTML geometry comes from the OSRM
+**foot** router. The annotated PDF/PNG uses the flyer's own printed street
+network, so it stays aligned with a stylized map rather than projecting GPS
+geometry back onto it. Both geometries use the same stop order.
+
+If calibration or OSRM validation fails, the flyer route is still produced.
+The GPS status explains why geographic files are unavailable; the application
+does not silently replace a failed street route with straight lines.
 
 > Note on "one Google Maps link": Google's URL API hard-caps a directions
 > link at 9 waypoints, so a 160-stop route cannot be encoded exactly in a
@@ -162,10 +182,10 @@ and the KML/GPX/HTML geometry comes from the OSRM **foot** router.
 
 ## Creating a calibration file for a new map
 
-The only per-map input is a calibration JSON: at least 3 well-spread
-landmarks whose pixel position (at `--dpi`, default 300) and GPS coordinates
-you know. The U-/S-Bahn station icons on the flyer are ideal because the
-script can find them for you.
+For named-station and GPS exports, the per-map input is a calibration JSON:
+at least 3 well-spread landmarks whose pixel position (at `--dpi`, default
+300) and GPS coordinates you know. The U-/S-Bahn station icons on the flyer
+are ideal because the script can find them for you.
 
 **Step 1 — run the helper.** It detects the blue U and green S icons and
 writes a pre-filled template plus a rendered PNG of the page:
@@ -247,9 +267,12 @@ with `docker compose down -v`.
 
 Multi-stage build on `python:3.12-slim`, runs as a non-root user, exposes
 port 8000, has a `/health` endpoint wired into Docker health checks. The app
-needs outbound HTTPS to nominatim.openstreetmap.org (geocoding) and
-routing.openstreetmap.de (walking geometry) — both optional, the pipeline
-falls back to straight lines without them.
+needs outbound HTTPS to Nominatim and Overpass for automatic geocoding and
+station names, and to routing.openstreetmap.de for geographic walking
+geometry. These are free OpenStreetMap services. Cached/manual calibration
+can replace geocoding; when geographic routing is unavailable, the app still
+produces the printed-street flyer route and clearly marks GPS exports as
+unavailable.
 
 ### Pushing to Docker Hub
 

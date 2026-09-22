@@ -40,6 +40,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import hoffroute as hr
+import station_resolver as station_names
 
 
 def load_dotenv(path=Path(".env")):
@@ -67,6 +68,8 @@ ROUTE_CACHE_DIR = Path(os.environ.get(
 ROUTE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PDF_BYTES = 50 * 1024 * 1024
 RENDER_DPI = 300
+ROUTE_CACHE_VERSION = "flyer-streets-v3"
+CALIB_CACHE_VERSION = "station-resolver-v1"
 AUTOCALIB_CONTEXT = os.environ.get(
     "HOFFROUTE_AUTOCALIB_CONTEXT", "Germany")
 AUTOCALIB_MAX_CANDIDATES = int(os.environ.get(
@@ -81,6 +84,12 @@ AUTOCALIB_TRANSIT_TIMEOUT_S = int(os.environ.get(
     "HOFFROUTE_AUTOCALIB_TRANSIT_TIMEOUT_S", "20"))
 OVERPASS_URL = os.environ.get(
     "HOFFROUTE_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+OVERPASS_URLS = tuple(dict.fromkeys(
+    url.strip() for url in os.environ.get(
+        "HOFFROUTE_OVERPASS_URLS",
+        f"{OVERPASS_URL},https://overpass.kumi.systems/api/interpreter",
+    ).split(",") if url.strip()
+))
 TESSERACT_CMD = os.environ.get("HOFFROUTE_TESSERACT_CMD") or shutil.which(
     "tesseract")
 TESSERACT_LANG = os.environ.get("HOFFROUTE_TESSERACT_LANG", "deu+eng")
@@ -278,7 +287,7 @@ def pdf_sha256(pdf: Path) -> str:
 
 
 def cache_path(pdf_hash: str) -> Path:
-    return CALIB_CACHE_DIR / f"{pdf_hash}.json"
+    return CALIB_CACHE_DIR / f"{pdf_hash}_{CALIB_CACHE_VERSION}.json"
 
 
 def calib_content_hash(calib) -> str:
@@ -289,10 +298,38 @@ def calib_content_hash(calib) -> str:
     return hashlib.sha256(stable.encode()).hexdigest()[:20]
 
 
-def route_cache_dir(pdf_hash: str | None, calib) -> Path | None:
+def route_cache_dir(pdf_hash: str | None, calib, start=None, end=None) -> Path | None:
     if not pdf_hash:
         return None
-    return ROUTE_CACHE_DIR / f"{pdf_hash[:20]}_{calib_content_hash(calib)}"
+    route_options = json.dumps({
+        "version": ROUTE_CACHE_VERSION,
+        "calibration": calib_content_hash(calib),
+        "start": start,
+        "end": end,
+    }, sort_keys=True, separators=(",", ":"))
+    options_hash = hashlib.sha256(route_options.encode()).hexdigest()[:20]
+    return ROUTE_CACHE_DIR / f"{pdf_hash[:20]}_{options_hash}"
+
+
+def build_response(raw_summary, log_lines, base=""):
+    """Add job URLs without changing the cached raw summary."""
+    summary = dict(raw_summary)
+    summary["variants"] = [dict(variant)
+                           for variant in raw_summary.get("variants", [])]
+    summary["files"] = list(raw_summary.get("files", []))
+    summary["log"] = list(log_lines)
+    summary["base"] = base
+    if not base:
+        return summary
+    summary["files"] = [f"{base}/{name}" for name in summary["files"]]
+    for variant in summary["variants"]:
+        variant["pdf"] = f"{base}/{variant['pdf']}"
+        variant["png"] = f"{base}/{variant['png']}"
+        if variant.get("gpx"):
+            variant["gpx"] = f"{base}/{variant['gpx']}"
+        if variant.get("kml"):
+            variant["kml"] = f"{base}/{variant['kml']}"
+    return summary
 
 
 def read_json(path: Path):
@@ -700,27 +737,122 @@ def fit_auto_points(points):
     return best[1]
 
 
-def overpass_transit_candidates(lat, lon):
+def _expanded_control_bounds(control_points, expansion_m=3000):
+    latitudes = [float(point["lat"]) for point in control_points]
+    longitudes = [float(point["lon"]) for point in control_points]
+    mean_lat = sum(latitudes) / len(latitudes)
+    lat_pad = expansion_m / 111320
+    lon_pad = expansion_m / (
+        111320 * max(0.2, math.cos(math.radians(mean_lat))))
+    return (
+        min(latitudes) - lat_pad,
+        min(longitudes) - lon_pad,
+        max(latitudes) + lat_pad,
+        max(longitudes) + lon_pad,
+    )
+
+
+def overpass_transit_candidates(context, control_points, icons):
+    south, west, north, east = _expanded_control_bounds(control_points)
+    bbox = f"{south:.7f},{west:.7f},{north:.7f},{east:.7f}"
     query = f"""
 [out:json][timeout:8];
 (
-  node(around:{AUTOCALIB_TRANSIT_RADIUS_M},{lat:.7f},{lon:.7f})["name"]["railway"~"station|halt|tram_stop|subway_entrance"];
-  way(around:{AUTOCALIB_TRANSIT_RADIUS_M},{lat:.7f},{lon:.7f})["name"]["railway"~"station|halt|tram_stop|subway_entrance"];
-  relation(around:{AUTOCALIB_TRANSIT_RADIUS_M},{lat:.7f},{lon:.7f})["name"]["railway"~"station|halt|tram_stop|subway_entrance"];
-  node(around:{AUTOCALIB_TRANSIT_RADIUS_M},{lat:.7f},{lon:.7f})["name"]["public_transport"~"station|stop_position|platform"];
-  way(around:{AUTOCALIB_TRANSIT_RADIUS_M},{lat:.7f},{lon:.7f})["name"]["public_transport"~"station|stop_position|platform"];
-  relation(around:{AUTOCALIB_TRANSIT_RADIUS_M},{lat:.7f},{lon:.7f})["name"]["public_transport"~"station|stop_position|platform"];
+  node({bbox})["name"]["railway"~"station|halt|tram_stop|subway_entrance"];
+  way({bbox})["name"]["railway"~"station|halt|tram_stop|subway_entrance"];
+  relation({bbox})["name"]["railway"~"station|halt|tram_stop|subway_entrance"];
+  node({bbox})["name"]["public_transport"~"station|stop_position|platform"];
+  way({bbox})["name"]["public_transport"~"station|stop_position|platform"];
+  relation({bbox})["name"]["public_transport"~"station|stop_position|platform"];
 );
-out center body 50;
+out center body 100;
 """
     data = urllib.parse.urlencode({"data": query}).encode()
-    req = urllib.request.Request(
-        OVERPASS_URL,
-        data=data,
-        headers={"User-Agent": "hoffroute/1.0 (auto calibration)"})
-    with urllib.request.urlopen(req, timeout=12, context=hr.SSL_CTX) as r:
-        payload = json.loads(r.read())
-    return payload.get("elements", [])
+    last_error = None
+    for endpoint in OVERPASS_URLS:
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={"User-Agent": "hoffroute/1.0 (auto calibration)"})
+        try:
+            with urllib.request.urlopen(
+                req, timeout=8, context=hr.SSL_CTX
+            ) as response:
+                payload = json.loads(response.read())
+            return payload.get("elements", [])
+        except (OSError, TimeoutError, ValueError) as exc:
+            last_error = exc
+            LOGGER.warning(
+                "transit lookup endpoint failed endpoint=%s error=%s",
+                endpoint, exc)
+    if last_error is not None:
+        raise last_error
+    return []
+
+
+def nominatim_transit_candidates(context, control_points, icons):
+    elements = []
+    modes = sorted({"U" if kind.startswith("U-Bahn") else "S"
+                    for kind, _px, _py in icons})
+    south, west, north, east = _expanded_control_bounds(control_points)
+    viewbox = f"{west:.7f},{north:.7f},{east:.7f},{south:.7f}"
+    seen = set()
+    searches = []
+    for mode in modes:
+        searches.append((mode, f"{mode}-Bahn {context}", False))
+        if mode == "S":
+            searches.extend((
+                (mode, "Bahnhof", True),
+                (mode, "Haltepunkt", True),
+            ))
+        elif mode == "U":
+            searches.append((mode, "U-Bahnhof", True))
+
+    for search_index, (mode, query, bounded) in enumerate(searches):
+        options = {
+            "q": query,
+            "format": "jsonv2",
+            "limit": 50,
+            "addressdetails": 1,
+        }
+        if bounded:
+            options.update({"viewbox": viewbox, "bounded": 1})
+        params = urllib.parse.urlencode(options)
+        req = urllib.request.Request(
+            f"https://nominatim.openstreetmap.org/search?{params}",
+            headers={"User-Agent": "hoffroute/1.0 (station resolver)"})
+        if search_index:
+            time.sleep(1.0)
+        with urllib.request.urlopen(
+            req, timeout=8, context=hr.SSL_CTX
+        ) as response:
+            results = json.loads(response.read())
+        for result in results:
+            category = str(result.get("category", ""))
+            result_type = str(result.get("type", ""))
+            if category not in {"railway", "public_transport"} and \
+                    result_type not in {"station", "halt"}:
+                continue
+            identity = (result.get("osm_type"), result.get("osm_id"))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            elements.append({
+                "type": result.get("osm_type", "item"),
+                "id": result.get("osm_id", result.get("place_id")),
+                "lat": float(result["lat"]),
+                "lon": float(result["lon"]),
+                "tags": {
+                    "name": result.get("name") or
+                            str(result.get("display_name", "")).split(",", 1)[0],
+                    "railway": (result_type if result_type in {"station", "halt"}
+                                else "station"),
+                    "train": "yes" if mode == "S" else "",
+                    "station": "subway" if mode == "U" else "",
+                    "network": f"{mode}-Bahn",
+                },
+            })
+    return elements
 
 
 def kind_matches_transit(kind, tags):
@@ -737,64 +869,37 @@ def kind_matches_transit(kind, tags):
     return True
 
 
-def transit_stations_from_icons(icons, control_points):
+def transit_stations_from_icons(icons, control_points, context=None):
     if not icons or len(control_points) < 3:
-        return []
-    px2ll, _ = hr.fit_affine(control_points)
-    stations = []
-    seen = set()
+        return station_names.StationResolution([], [])
+    context = context or AUTOCALIB_CONTEXT
     deadline = time.monotonic() + AUTOCALIB_TRANSIT_TIMEOUT_S
-    for kind, px, py in icons:
-        if time.monotonic() >= deadline:
-            LOGGER.warning(
-                "auto-calibration transit lookup stopped: budget of %ds exceeded",
-                AUTOCALIB_TRANSIT_TIMEOUT_S)
-            break
-        lat, lon = px2ll(px, py)
+
+    def within_budget(provider):
+        def call(*args):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"station lookup exceeded {AUTOCALIB_TRANSIT_TIMEOUT_S}s")
+            return provider(*args)
+        return call
+
+    LOGGER.info(
+        "auto-calibration resolving %d transit icon(s) context=%r",
+        len(icons), context)
+    result = station_names.resolve_station_icons(
+        icons, control_points, context,
+        candidate_providers=[
+            within_budget(overpass_transit_candidates),
+            within_budget(nominatim_transit_candidates),
+        ],
+    )
+    for warning in result.warnings:
+        LOGGER.warning("auto-calibration transit resolution: %s", warning)
+    for station in result.stations:
         LOGGER.info(
-            "auto-calibration transit lookup kind=%r px=(%.1f,%.1f) approx=(%.7f,%.7f) radius_m=%d",
-            kind, px, py, lat, lon, AUTOCALIB_TRANSIT_RADIUS_M)
-        try:
-            candidates = overpass_transit_candidates(lat, lon)
-        except Exception as e:
-            LOGGER.warning(
-                "auto-calibration transit lookup failed kind=%r error=%s",
-                kind, e)
-            continue
-        named = []
-        for el in candidates:
-            tags = el.get("tags", {})
-            name = tags.get("name")
-            center = el.get("center", {})
-            el_lat = el.get("lat", center.get("lat"))
-            el_lon = el.get("lon", center.get("lon"))
-            if not name or el_lat is None or el_lon is None:
-                continue
-            if not kind_matches_transit(kind, tags):
-                continue
-            named.append((distance_m(lat, lon, el_lat, el_lon), name, el_lat, el_lon))
-        if not named:
-            LOGGER.info(
-                "auto-calibration transit lookup found no named match kind=%r",
-                kind)
-            continue
-        dist, name, st_lat, st_lon = min(named, key=lambda item: item[0])
-        key = normalized_label(f"{kind} {name}")
-        if key in seen:
-            continue
-        seen.add(key)
-        station_name = f"{name} ({'U' if kind.startswith('U-Bahn') else 'S'})"
-        stations.append({
-            "name": station_name,
-            "px": round(px, 1),
-            "py": round(py, 1),
-            "lat": float(st_lat),
-            "lon": float(st_lon),
-        })
-        LOGGER.info(
-            "auto-calibration transit match kind=%r name=%r distance_m=%.0f",
-            kind, station_name, dist)
-    return stations
+            "auto-calibration transit match mode=%s name=%r osm_id=%s",
+            station["mode"], station["name"], station["osm_id"])
+    return result
 
 
 def auto_calibrate(pdf: Path, dpi: int, image_path: Path, icons, dots,
@@ -835,17 +940,22 @@ def auto_calibrate(pdf: Path, dpi: int, image_path: Path, icons, dots,
         {k: p[k] for k in ("name", "px", "py", "lat", "lon")}
         for p in inliers
     ]
-    stations = transit_stations_from_icons(icons, control_points)
+    station_resolution = transit_stations_from_icons(
+        icons, control_points, context)
     calib = {
         "comment": "Auto-generated from embedded PDF text and Nominatim. "
                    "Review before relying on exact distances.",
+        "context": context,
         "map_bbox_px": auto_bbox(dots, width, height),
         "control_points": control_points,
-        "stations": stations,
+        "stations": station_resolution.stations,
+        "station_warnings": station_resolution.warnings,
     }
     LOGGER.info(
-        "auto-calibration created control_points=%d stations=%d bbox=%s",
-        len(control_points), len(stations), calib["map_bbox_px"])
+        "auto-calibration created control_points=%d stations=%d warnings=%d "
+        "bbox=%s",
+        len(control_points), len(station_resolution.stations),
+        len(station_resolution.warnings), calib["map_bbox_px"])
     return calib
 
 
@@ -1071,21 +1181,11 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
             return
 
         out = d / "out"
-        rcache = route_cache_dir(pdf_hash, calib)
+        rcache = route_cache_dir(
+            pdf_hash, calib, payload.get("start") or None,
+            payload.get("end") or None)
 
-        def build_response(raw_summary, log_lines):
-            base = f"/jobs/{jid}/out"
-            raw_summary["log"] = log_lines
-            raw_summary["base"] = base
-            raw_summary["files"] = [f"{base}/{f}" for f in raw_summary["files"]]
-            for v in raw_summary["variants"]:
-                v["pdf"] = f"{base}/{v['pdf']}"
-                v["png"] = f"{base}/{v['png']}"
-                if v.get("gpx"):
-                    v["gpx"] = f"{base}/{v['gpx']}"
-                if v.get("kml"):
-                    v["kml"] = f"{base}/{v['kml']}"
-            return raw_summary
+        base = f"/jobs/{jid}/out"
 
         # --- route cache hit ---
         raw_cache_path = rcache / "raw_summary.json" if rcache else None
@@ -1096,7 +1196,11 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
                             ignore=shutil.ignore_patterns("raw_summary.json"),
                             dirs_exist_ok=True)
             raw = read_json(raw_cache_path)
-            summary = build_response(raw, ["(Ergebnis aus Cache geladen / served from route cache)"])
+            summary = build_response(
+                raw,
+                ["(Ergebnis aus Cache geladen / served from route cache)"],
+                base,
+            )
             LOGGER.info(
                 "solve complete (cached) job_id=%s variants=%d files=%d",
                 jid, len(summary["variants"]), len(summary["files"]))
@@ -1117,7 +1221,6 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
                 pdfs[0], calib, out, dpi=RENDER_DPI,
                 start=payload.get("start") or None,
                 end=payload.get("end") or None,
-                use_osrm=bool(payload.get("use_osrm", True)),
                 log=pipeline_log,
                 resolve_stations=transit_stations_from_icons)
         except Exception as e:
@@ -1147,7 +1250,7 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
             except Exception as e:
                 LOGGER.warning("solve route cache save failed: %s", e)
 
-        summary = build_response(summary, log_lines)
+        summary = build_response(summary, log_lines, base)
         LOGGER.info(
             "solve complete job_id=%s variants=%d files=%d",
             jid, len(summary["variants"]), len(summary["files"]))
@@ -1170,8 +1273,8 @@ def solve(payload: dict, request: Request):
         raise HTTPException(403, "login required for manual calibration")
     meta = read_json(d / "meta.json") or {}
     LOGGER.info(
-        "solve start job_id=%s pdf_hash=%s use_osrm=%s start=%r end=%r",
-        jid, meta.get("pdf_hash"), bool(payload.get("use_osrm", True)),
+        "solve start job_id=%s pdf_hash=%s start=%r end=%r",
+        jid, meta.get("pdf_hash"),
         payload.get("start") or None, payload.get("end") or None)
     # Remove any previous solve result so the status endpoint doesn't return stale data
     (d / "solve_result.json").unlink(missing_ok=True)
