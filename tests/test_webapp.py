@@ -29,14 +29,14 @@ class RouteCacheTests(unittest.TestCase):
 
         self.assertNotEqual(first, reversed_route)
 
-    def test_route_cache_version_invalidates_pre_flyer_graph_results(self):
+    def test_route_cache_version_invalidates_pre_directional_results(self):
         calibration = {"control_points": []}
         current = webapp.route_cache_dir("abcdef", calibration)
 
         with mock.patch.object(webapp, "ROUTE_CACHE_VERSION", "street-v2"):
             legacy = webapp.route_cache_dir("abcdef", calibration)
 
-        self.assertEqual(webapp.ROUTE_CACHE_VERSION, "flyer-streets-v1")
+        self.assertEqual(webapp.ROUTE_CACHE_VERSION, "flyer-streets-v2")
         self.assertNotEqual(current, legacy)
 
     def test_calibration_cache_version_invalidates_old_station_names(self):

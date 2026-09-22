@@ -721,6 +721,78 @@ def station_labels_for_icons(icons, stations, route_order=None):
     return labels, warnings
 
 
+def directional_route_geometry(route_px, lane_offset_px=6,
+                               arrow_spacing_px=150,
+                               arrow_length_px=18, arrow_width_px=12):
+    """Offset opposing traversals and place arrowheads along a pixel route."""
+    points = [tuple(map(float, point)) for point in route_px]
+    if len(points) < 2:
+        return points, []
+
+    edge_directions = {}
+    edge_keys = []
+    for first, second in zip(points, points[1:]):
+        key = tuple(sorted((first, second)))
+        direction = 1 if first <= second else -1
+        edge_keys.append(key)
+        edge_directions.setdefault(key, set()).add(direction)
+
+    edge_offsets = []
+    for first, second, key in zip(points, points[1:], edge_keys):
+        dx, dy = second[0] - first[0], second[1] - first[1]
+        length = math.hypot(dx, dy)
+        if length and len(edge_directions[key]) > 1:
+            edge_offsets.append((
+                -dy / length * lane_offset_px,
+                dx / length * lane_offset_px,
+            ))
+        else:
+            edge_offsets.append((0.0, 0.0))
+
+    closed = points[0] == points[-1]
+    displayed = []
+    for index, point in enumerate(points):
+        if closed and index in {0, len(points) - 1}:
+            offsets = (edge_offsets[-1], edge_offsets[0])
+        elif index == 0:
+            offsets = (edge_offsets[0],)
+        elif index == len(points) - 1:
+            offsets = (edge_offsets[-1],)
+        else:
+            offsets = (edge_offsets[index - 1], edge_offsets[index])
+        ox = sum(offset[0] for offset in offsets) / len(offsets)
+        oy = sum(offset[1] for offset in offsets) / len(offsets)
+        displayed.append((point[0] + ox, point[1] + oy))
+    if closed:
+        displayed[-1] = displayed[0]
+
+    arrows = []
+    next_arrow = arrow_spacing_px / 2
+    travelled = 0.0
+    for first, second in zip(displayed, displayed[1:]):
+        dx, dy = second[0] - first[0], second[1] - first[1]
+        length = math.hypot(dx, dy)
+        if not length:
+            continue
+        ux, uy = dx / length, dy / length
+        while next_arrow <= travelled + length:
+            along = next_arrow - travelled
+            cx, cy = first[0] + ux * along, first[1] + uy * along
+            tip = (cx + ux * arrow_length_px / 2,
+                   cy + uy * arrow_length_px / 2)
+            back_x = cx - ux * arrow_length_px / 2
+            back_y = cy - uy * arrow_length_px / 2
+            half_width = arrow_width_px / 2
+            arrows.append((
+                tip,
+                (back_x - uy * half_width, back_y + ux * half_width),
+                (back_x + uy * half_width, back_y - ux * half_width),
+            ))
+            next_arrow += arrow_spacing_px
+        travelled += length
+    return displayed, arrows
+
+
 def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.41),
                  dpi=300, station_labels=None, route_px=None,
                  access_spurs=None):
@@ -729,8 +801,14 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     doc = fitz.open(src_doc_path)
     page = doc[0]
     pts = [fitz.Point(x * s, y * s) for x, y in order_px]
-    route_pts = [fitz.Point(x * s, y * s)
-                 for x, y in (route_px or order_px)]
+    directional_px, arrow_triangles = directional_route_geometry(
+        route_px or order_px,
+        lane_offset_px=6 * dpi / 300,
+        arrow_spacing_px=150 * dpi / 300,
+        arrow_length_px=18 * dpi / 300,
+        arrow_width_px=12 * dpi / 300,
+    )
+    route_pts = [fitz.Point(x * s, y * s) for x, y in directional_px]
 
     closed = order_px[0] == order_px[-1]
     if access_spurs:
@@ -747,6 +825,16 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     shape.finish(color=(0.11, 0.46, 0.84), width=2.2, lineJoin=1, lineCap=1,
                  stroke_opacity=0.8)
     shape.commit()
+
+    if arrow_triangles:
+        arrow_shape = page.new_shape()
+        for triangle in arrow_triangles:
+            arrow = [fitz.Point(x * s, y * s) for x, y in triangle]
+            arrow_shape.draw_polyline([*arrow, arrow[0]])
+        arrow_shape.finish(
+            color=(0.04, 0.25, 0.55), fill=(0.04, 0.25, 0.55),
+            width=0.25, stroke_opacity=0.95, fill_opacity=0.95)
+        arrow_shape.commit()
 
     # Flag markers: vertical pole with a filled triangle pennant at the top.
     # Green flag = start, red flag = end (omitted for closed circular tours).

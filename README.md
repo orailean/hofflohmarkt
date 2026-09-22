@@ -28,7 +28,9 @@ station variants and geographic navigation exports.
    graph from that network.
 3. Solves the visiting order on that graph (nearest neighbor + 2-opt +
    Or-opt). PDF routes always follow the printed streets, visit every detected
-   market dot, and close the loop for the loop/circle variants.
+   market dot, and close the loop for the loop/circle variants. Direction
+   arrows show which way to walk; a street used in both directions is drawn
+   as two parallel lanes so the outgoing and return legs remain visible.
 4. When calibration is available, georeferences the same ordered stops and
    asks the public [FOSSGIS OSRM](https://routing.openstreetmap.de) foot router
    for real OpenStreetMap walking geometry. The GPS route is checked for

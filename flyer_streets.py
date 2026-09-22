@@ -193,29 +193,43 @@ class FlyerStreetGraph:
         return bool(np.isfinite(distances[second]))
 
     def snap_stops(self, stops, max_distance_px):
+        if not stops:
+            return []
+        stop_points = np.asarray(stops, dtype=float)
+        component_count, component_labels = csgraph.connected_components(
+            self.adjacency, directed=False)
+        component_sizes = np.bincount(
+            component_labels, minlength=component_count)
+        selected = None
+        fallback = None
+        for component in np.argsort(component_sizes)[::-1]:
+            component_nodes = np.flatnonzero(component_labels == component)
+            tree = cKDTree(self.node_xy[component_nodes])
+            distances, local_nodes = tree.query(stop_points)
+            candidate = (distances, component_nodes[local_nodes])
+            if fallback is None:
+                fallback = candidate
+            if np.all(distances <= max_distance_px):
+                selected = candidate
+                break
+        if selected is None:
+            distances, _nodes = fallback
+            marker_number = int(np.flatnonzero(
+                distances > max_distance_px)[0]) + 1
+            raise FlyerStreetError(
+                f"market marker {marker_number} is not connected to the "
+                "printed street network")
+
+        distances, nodes = selected
         access = []
-        for marker_number, stop in enumerate(stops, start=1):
-            distance, node = self._node_tree.query(
-                np.asarray(stop, dtype=float))
-            if distance > max_distance_px:
-                raise FlyerStreetError(
-                    f"market marker {marker_number} is not connected to the "
-                    "printed street network")
-            street = self.node_xy[int(node)]
+        for stop, distance, node in zip(stops, distances, nodes):
+            street = self.node_xy[node]
             access.append(StreetAccess(
                 stop_xy=(float(stop[0]), float(stop[1])),
                 street_xy=(float(street[0]), float(street[1])),
                 node=int(node),
                 distance_px=float(distance),
             ))
-        if access:
-            matrix = self.distance_matrix(access)
-            disconnected = np.argwhere(~np.isfinite(matrix))
-            if len(disconnected):
-                marker_number = int(disconnected[0, 1]) + 1
-                raise FlyerStreetError(
-                    f"market marker {marker_number} is on a disconnected "
-                    "printed street component")
         return access
 
     def distance_matrix(self, access):

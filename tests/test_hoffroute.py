@@ -63,6 +63,25 @@ class GeoreferencingTests(unittest.TestCase):
         self.assertAlmostEqual(y, 100)
 
 
+class DirectionalRouteRenderingTests(unittest.TestCase):
+    def test_out_and_back_edges_use_opposite_lanes_with_arrows(self):
+        route = [
+            (0, 0), (100, 0), (200, 0),
+            (100, 0), (0, 0),
+        ]
+
+        displayed, arrows = hr.directional_route_geometry(
+            route, lane_offset_px=6, arrow_spacing_px=70,
+            arrow_length_px=12, arrow_width_px=8,
+        )
+
+        self.assertGreater(displayed[1][1], 0)
+        self.assertLess(displayed[3][1], 0)
+        self.assertEqual(displayed[0], displayed[-1])
+        self.assertGreaterEqual(len(arrows), 4)
+        self.assertTrue(all(len(arrow) == 3 for arrow in arrows))
+
+
 class StreetRouterTests(unittest.TestCase):
     def setUp(self):
         hr.StreetRouter._last_request_at = None

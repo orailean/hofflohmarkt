@@ -79,6 +79,18 @@ class FlyerStreetRoutingTests(unittest.TestCase):
         self.assertEqual(access[0].node, access[1].node)
         self.assertEqual(graph.distance_matrix(access)[0, 1], 0)
 
+    def test_snap_stops_ignores_a_closer_tiny_disconnected_artifact(self):
+        mask = np.zeros((100, 200), dtype=bool)
+        mask[50, 20:181] = True
+        mask[43, 23:30] = True
+        graph = FlyerStreetGraph.from_skeleton(mask.copy(), mask, dpi=300)
+
+        access = graph.snap_stops(
+            [(25, 42), (150, 55)], max_distance_px=15)
+
+        self.assertEqual([item.street_xy[1] for item in access], [50, 50])
+        self.assertTrue(np.isfinite(graph.distance_matrix(access)).all())
+
     def test_reports_number_of_an_unreachable_market_marker(self):
         with self.assertRaisesRegex(FlyerStreetError, "marker 2"):
             graph_fixture(cross=False).snap_stops(
