@@ -685,6 +685,43 @@ map.fitBounds(g0.getLayers()[0].getBounds().pad(0.08));
     Path(path).write_text(html, encoding="utf-8")
 
 
+def station_labels_for_icons(icons, stations, route_order=None):
+    """Return named callouts and warnings; never invent a station name."""
+    named = [((station["px"], station["py"]), index, station["name"])
+             for index, station in enumerate(stations)]
+    labels, warnings = [], []
+    route_start = route_order[0] if route_order else None
+    route_end = route_order[-1] if route_order else None
+    for kind, x, y in icons:
+        best_name, best_index, best_dist = None, None, float("inf")
+        for (sx, sy), station_index, station_name in named:
+            distance = math.hypot(x - sx, y - sy)
+            if distance < best_dist:
+                best_dist = distance
+                best_name = station_name
+                best_index = station_index
+        if best_dist >= 30 or best_name is None:
+            warnings.append(
+                f"Station name unavailable for {kind} at ({x:.0f}, {y:.0f})")
+            continue
+        if best_index == route_start == route_end:
+            role = "start_end"
+        elif best_index == route_start:
+            role = "start"
+        elif best_index == route_end:
+            role = "end"
+        else:
+            role = None
+        labels.append({
+            "x": float(x),
+            "y": float(y),
+            "name": str(best_name),
+            "kind": kind[0],
+            "role": role,
+        })
+    return labels, warnings
+
+
 def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.41),
                  dpi=300, station_labels=None, route_px=None,
                  access_spurs=None):
@@ -1079,6 +1116,7 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
     # --- last step: annotate PDFs + previews (both modes) ---
     log(f"{steps}/{steps} annotating PDFs + previews ...")
     fitz.open(pdf_path)[0].get_pixmap(dpi=110).save(out / "original.png")
+    station_warnings = list(calib.get("station_warnings", [])) if calib else []
     for v in variants:
         order_px = [node_to_px[n] for n in v["order"]]
         if gps_available and v.get("dist") is not None:
@@ -1087,35 +1125,11 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         else:
             title_str = f"{v['title']} | {len(dots_px)} Hoefe"
         pdf_out = out / f"route_{v['key']}.pdf"
-        # Label every detected icon. Use the named station from calibration
-        # when one is close (within 30 px); otherwise show a short type
-        # label ("U" or "S").
-        _named = [((s["px"], s["py"]), index, s["name"])
-                  for index, s in enumerate(stations)]
-        station_labels = []
-        for kind, x, y in detect_station_icons(img):
-            best_name, best_index, best_dist = None, None, float("inf")
-            for (sx, sy), station_index, station_name in _named:
-                d = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
-                if d < best_dist:
-                    best_dist = d
-                    best_name = station_name
-                    best_index = station_index
-            if best_dist >= 30:
-                best_name, best_index = f"{kind[0]}-Bahn", None
-            route_start, route_end = v["order"][0], v["order"][-1]
-            if best_index == route_start == route_end:
-                role = "start_end"
-            elif best_index == route_start:
-                role = "start"
-            elif best_index == route_end:
-                role = "end"
-            else:
-                role = None
-            station_labels.append({
-                "x": float(x), "y": float(y), "name": best_name,
-                "kind": kind[0], "role": role,
-            })
+        station_labels, label_warnings = station_labels_for_icons(
+            detect_station_icons(img), stations, v["order"])
+        for warning in label_warnings:
+            if warning not in station_warnings:
+                station_warnings.append(warning)
         station_labels = station_labels or None
         annotate_pdf(pdf_path, pdf_out, order_px, title_str, dpi=dpi,
                      station_labels=station_labels, route_px=v["route_px"],
@@ -1126,10 +1140,17 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
     return {
         "dots": len(dots_px),
         "fit_rms_m": round(rms, 1) if rms is not None else None,
-        "station_warnings": list(calib.get("station_warnings", []))
-                            if calib else [],
+        "station_warnings": station_warnings,
         "gps_available": gps_available,
         "gps_warning": gps_warning,
+        "flyer_route": {
+            "available": True,
+            "warning": None,
+        },
+        "gps_route": {
+            "available": gps_available,
+            "warning": gps_warning,
+        },
         "variants": [{
             "key": v["key"], "name": v["name"],
             "bird_km": round(v["bird"] / 1000, 2) if calibrated else None,

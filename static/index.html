@@ -223,7 +223,6 @@
   <div class="card" id="step3" style="display:none">
     <div class="step"><div class="n">3</div><h2 data-i18n="step3.title"></h2></div>
     <div class="row">
-      <label data-i18n-title="step3.osrmTip"><input type="checkbox" id="useOsrm" checked> <span data-i18n="step3.osrm"></span></label>
       <label id="startLabel"><span data-i18n="step3.start"></span> <select id="selStart"></select></label>
       <label id="endLabel"><span data-i18n="step3.end"></span> <select id="selEnd"></select></label>
       <button id="solveBtn" class="primary" data-i18n="step3.solve"></button>
@@ -660,8 +659,7 @@ $('solveBtn').onclick = async () => {
     const r = await fetch('/api/solve', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_id: job.job_id, calib,
-        start: $('selStart').value || null, end: $('selEnd').value || null,
-        use_osrm: $('useOsrm').checked})});
+        start: $('selStart').value || null, end: $('selEnd').value || null})});
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     while (true) {
       await new Promise(res => setTimeout(res, 2000));
@@ -679,9 +677,22 @@ $('solveBtn').onclick = async () => {
 
 // ---------- results ----------
 function showResults() {
-  const hasGPS = summary.fit_rms_m !== null;
+  const hasGPS = summary.gps_route
+    ? summary.gps_route.available
+    : summary.gps_available;
+  const gpsWarning = summary.gps_route
+    ? summary.gps_route.warning
+    : summary.gps_warning;
+  const stationWarnings = summary.station_warnings || [];
   $('chips').innerHTML =
     `<span class="chip">${t('chip.courtyards', {n: summary.dots})}</span>` +
+    `<span class="chip">${t('chip.flyer')}</span>` +
+    (hasGPS
+      ? `<span class="chip">${t('chip.gps')}</span>`
+      : `<span class="chip" title="${gpsWarning || ''}">${t('chip.gpsUnavailable')}</span>`) +
+    (stationWarnings.length
+      ? `<span class="chip" title="${stationWarnings.join(' · ')}">${t('chip.stationWarning', {n: stationWarnings.length})}</span>`
+      : '') +
     (hasGPS ? `<span class="chip" title="${t('chip.fitTip', {v: summary.fit_rms_m})}">${t('chip.fit', {v: summary.fit_rms_m})}</span>` : '') +
     `<span class="chip">${t('chip.walk')}</span>`;
   const tabs = $('tabs');
@@ -753,7 +764,7 @@ function selectVariant(key) {
   let actions = '';
   if (v.gmaps)
     actions += `<a href="${v.gmaps}" target="_blank"><button class="primary">${t('act.gmaps')}</button></a>`;
-  if (summary.fit_rms_m !== null)
+  if (summary.gps_route ? summary.gps_route.available : summary.gps_available)
     actions += `<a href="${summary.base}/routes_map.html" target="_blank"><button>${t('act.osm')}</button></a>`;
   if (v.kml)
     actions += `<a href="${v.kml}" download><button class="ghost">${t('act.kml')}</button></a>`;

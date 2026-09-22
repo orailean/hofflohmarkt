@@ -344,6 +344,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(stations, result.stations)
         self.assertEqual(warnings, result.warnings)
 
+    def test_generic_transit_mode_is_not_rendered_as_station_name(self):
+        labels, warnings = hr.station_labels_for_icons(
+            [("S-Bahn (green icon)", 100, 100)], stations=[])
+
+        self.assertEqual(labels, [])
+        self.assertIn("Station name unavailable", warnings[0])
+
     def test_pipeline_without_georeferencing_still_writes_flyer_route(self):
         with tempfile.TemporaryDirectory() as temp:
             temp_path = Path(temp)

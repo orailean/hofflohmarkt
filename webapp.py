@@ -68,7 +68,8 @@ ROUTE_CACHE_DIR = Path(os.environ.get(
 ROUTE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PDF_BYTES = 50 * 1024 * 1024
 RENDER_DPI = 300
-ROUTE_CACHE_VERSION = "street-v2"
+ROUTE_CACHE_VERSION = "flyer-streets-v1"
+CALIB_CACHE_VERSION = "station-resolver-v1"
 AUTOCALIB_CONTEXT = os.environ.get(
     "HOFFROUTE_AUTOCALIB_CONTEXT", "Germany")
 AUTOCALIB_MAX_CANDIDATES = int(os.environ.get(
@@ -280,7 +281,7 @@ def pdf_sha256(pdf: Path) -> str:
 
 
 def cache_path(pdf_hash: str) -> Path:
-    return CALIB_CACHE_DIR / f"{pdf_hash}.json"
+    return CALIB_CACHE_DIR / f"{pdf_hash}_{CALIB_CACHE_VERSION}.json"
 
 
 def calib_content_hash(calib) -> str:
@@ -302,6 +303,27 @@ def route_cache_dir(pdf_hash: str | None, calib, start=None, end=None) -> Path |
     }, sort_keys=True, separators=(",", ":"))
     options_hash = hashlib.sha256(route_options.encode()).hexdigest()[:20]
     return ROUTE_CACHE_DIR / f"{pdf_hash[:20]}_{options_hash}"
+
+
+def build_response(raw_summary, log_lines, base=""):
+    """Add job URLs without changing the cached raw summary."""
+    summary = dict(raw_summary)
+    summary["variants"] = [dict(variant)
+                           for variant in raw_summary.get("variants", [])]
+    summary["files"] = list(raw_summary.get("files", []))
+    summary["log"] = list(log_lines)
+    summary["base"] = base
+    if not base:
+        return summary
+    summary["files"] = [f"{base}/{name}" for name in summary["files"]]
+    for variant in summary["variants"]:
+        variant["pdf"] = f"{base}/{variant['pdf']}"
+        variant["png"] = f"{base}/{variant['png']}"
+        if variant.get("gpx"):
+            variant["gpx"] = f"{base}/{variant['gpx']}"
+        if variant.get("kml"):
+            variant["kml"] = f"{base}/{variant['kml']}"
+    return summary
 
 
 def read_json(path: Path):
@@ -1120,19 +1142,7 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
             pdf_hash, calib, payload.get("start") or None,
             payload.get("end") or None)
 
-        def build_response(raw_summary, log_lines):
-            base = f"/jobs/{jid}/out"
-            raw_summary["log"] = log_lines
-            raw_summary["base"] = base
-            raw_summary["files"] = [f"{base}/{f}" for f in raw_summary["files"]]
-            for v in raw_summary["variants"]:
-                v["pdf"] = f"{base}/{v['pdf']}"
-                v["png"] = f"{base}/{v['png']}"
-                if v.get("gpx"):
-                    v["gpx"] = f"{base}/{v['gpx']}"
-                if v.get("kml"):
-                    v["kml"] = f"{base}/{v['kml']}"
-            return raw_summary
+        base = f"/jobs/{jid}/out"
 
         # --- route cache hit ---
         raw_cache_path = rcache / "raw_summary.json" if rcache else None
@@ -1143,7 +1153,11 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
                             ignore=shutil.ignore_patterns("raw_summary.json"),
                             dirs_exist_ok=True)
             raw = read_json(raw_cache_path)
-            summary = build_response(raw, ["(Ergebnis aus Cache geladen / served from route cache)"])
+            summary = build_response(
+                raw,
+                ["(Ergebnis aus Cache geladen / served from route cache)"],
+                base,
+            )
             LOGGER.info(
                 "solve complete (cached) job_id=%s variants=%d files=%d",
                 jid, len(summary["variants"]), len(summary["files"]))
@@ -1193,7 +1207,7 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
             except Exception as e:
                 LOGGER.warning("solve route cache save failed: %s", e)
 
-        summary = build_response(summary, log_lines)
+        summary = build_response(summary, log_lines, base)
         LOGGER.info(
             "solve complete job_id=%s variants=%d files=%d",
             jid, len(summary["variants"]), len(summary["files"]))

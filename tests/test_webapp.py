@@ -29,6 +29,41 @@ class RouteCacheTests(unittest.TestCase):
 
         self.assertNotEqual(first, reversed_route)
 
+    def test_route_cache_version_invalidates_pre_flyer_graph_results(self):
+        calibration = {"control_points": []}
+        current = webapp.route_cache_dir("abcdef", calibration)
+
+        with mock.patch.object(webapp, "ROUTE_CACHE_VERSION", "street-v2"):
+            legacy = webapp.route_cache_dir("abcdef", calibration)
+
+        self.assertEqual(webapp.ROUTE_CACHE_VERSION, "flyer-streets-v1")
+        self.assertNotEqual(current, legacy)
+
+    def test_calibration_cache_version_invalidates_old_station_names(self):
+        current = webapp.cache_path("abcdef")
+        legacy = webapp.CALIB_CACHE_DIR / "abcdef.json"
+
+        self.assertEqual(webapp.CALIB_CACHE_VERSION, "station-resolver-v1")
+        self.assertNotEqual(current, legacy)
+
+    def test_result_distinguishes_flyer_and_gps_route_status(self):
+        summary = {
+            "flyer_route": {"available": True},
+            "gps_route": {
+                "available": False,
+                "warning": "GPS export unavailable: calibration is unreliable",
+            },
+            "variants": [],
+            "files": [],
+        }
+
+        response = webapp.build_response(summary, [])
+
+        self.assertTrue(response["flyer_route"]["available"])
+        self.assertFalse(response["gps_route"]["available"])
+        self.assertIn(
+            "calibration", response["gps_route"]["warning"].lower())
+
 
 class TransitProviderTests(unittest.TestCase):
     def test_overpass_query_uses_one_expanded_district_bounding_box(self):
