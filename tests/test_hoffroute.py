@@ -107,7 +107,7 @@ class StreetRouterTests(unittest.TestCase):
                 "geometry": {"type": "LineString", "coordinates": [
                     [11.0, 48.0], [11.0005, 48.001], [11.001, 48.001]
                 ]},
-                "legs": [],
+                "legs": [{}],
             }],
             "waypoints": [
                 {"location": [11.0, 48.0], "name": ""},
@@ -116,16 +116,18 @@ class StreetRouterTests(unittest.TestCase):
         }
 
         with mock.patch.object(router, "_request_json", return_value=response):
-            geometry, distance, duration = router.route(
+            result = router.route(
                 [(48.0, 11.0), (48.001, 11.001)]
             )
 
         self.assertEqual(
-            geometry,
+            result.geometry,
             [(48.0, 11.0), (48.001, 11.0005), (48.001, 11.001)],
         )
-        self.assertEqual(distance, 420.5)
-        self.assertEqual(duration, 310.0)
+        self.assertEqual(result.distance_m, 420.5)
+        self.assertEqual(result.duration_s, 310.0)
+        self.assertEqual(result.snapped_waypoints,
+                         [(48.0, 11.0), (48.001, 11.001)])
 
     def test_distance_matrix_is_tiled_for_large_stop_sets(self):
         router = hr.StreetRouter(min_interval=0, table_block=2)
@@ -180,7 +182,7 @@ class StreetRouterTests(unittest.TestCase):
                             [lon, lat] for lat, lon in request_coords
                         ],
                     },
-                    "legs": [],
+                    "legs": [{} for _ in range(len(request_coords) - 1)],
                 }],
                 "waypoints": [
                     {"location": [lon, lat], "name": ""}
@@ -189,11 +191,73 @@ class StreetRouterTests(unittest.TestCase):
             }
 
         with mock.patch.object(router, "_request_json", side_effect=route_response):
-            geometry, distance, duration = router.route(coords)
+            result = router.route(coords)
 
-        self.assertEqual(geometry, coords)
-        self.assertEqual(distance, 200.0)
-        self.assertEqual(duration, 160.0)
+        self.assertEqual(result.geometry, coords)
+        self.assertEqual(result.distance_m, 200.0)
+        self.assertEqual(result.duration_s, 160.0)
+        self.assertEqual(result.snapped_waypoints, coords)
+
+    def test_route_records_large_waypoint_snap_distance(self):
+        router = hr.StreetRouter(min_interval=0)
+        response = {
+            "code": "Ok",
+            "routes": [{
+                "distance": 100.0,
+                "duration": 80.0,
+                "geometry": {"type": "LineString", "coordinates": [
+                    [11.0, 48.000486], [11.001, 48.001]
+                ]},
+                "legs": [{}],
+            }],
+            "waypoints": [
+                {"location": [11.0, 48.000486], "name": ""},
+                {"location": [11.001, 48.001], "name": ""},
+            ],
+        }
+
+        with mock.patch.object(router, "_request_json", return_value=response):
+            result = router.route([(48.0, 11.0), (48.001, 11.001)])
+
+        self.assertGreater(result.snap_distances_m[0], 53)
+        self.assertLess(result.snap_distances_m[0], 55)
+
+    def test_circular_route_rejects_open_osrm_geometry(self):
+        result = hr.StreetRoute(
+            geometry=[(48.0, 11.0), (48.001, 11.001)],
+            distance_m=100,
+            duration_s=80,
+            snapped_waypoints=[(48.0, 11.0)] * 3,
+            snap_distances_m=[0, 0, 0],
+        )
+
+        with self.assertRaisesRegex(hr.StreetRoutingError, "not closed"):
+            hr.validate_geographic_route(
+                result, expected_waypoints=3, circular=True)
+
+    def test_route_rejects_missing_osrm_leg(self):
+        router = hr.StreetRouter(min_interval=0)
+        response = {
+            "code": "Ok",
+            "routes": [{
+                "distance": 100.0,
+                "duration": 80.0,
+                "geometry": {"type": "LineString", "coordinates": [
+                    [11.0, 48.0], [11.001, 48.001]
+                ]},
+                "legs": [],
+            }],
+            "waypoints": [
+                {"location": [11.0, 48.0], "name": ""},
+                {"location": [11.001, 48.001], "name": ""},
+            ],
+        }
+
+        with mock.patch.object(router, "_request_json", return_value=response):
+            with self.assertRaisesRegex(
+                hr.StreetRoutingError, "incomplete route legs"
+            ):
+                router.route([(48.0, 11.0), (48.001, 11.001)])
 
     def test_separate_router_instances_share_the_service_rate_limit(self):
         first = hr.StreetRouter(min_interval=1)
@@ -211,8 +275,9 @@ class StreetRouterTests(unittest.TestCase):
 
 
 class FakeStreetRouter:
-    def __init__(self):
+    def __init__(self, snap_distance=0.0):
         self.matrix_coords = None
+        self.snap_distance = snap_distance
 
     def distance_matrix(self, coords):
         self.matrix_coords = list(coords)
@@ -226,7 +291,13 @@ class FakeStreetRouter:
     def route(self, coords):
         # Include a visible detour that cannot occur in a straight stop-to-stop line.
         geometry = [coords[0], (48.03, 11.03), *coords[1:]]
-        return geometry, 400.0, 300.0
+        return hr.StreetRoute(
+            geometry=geometry,
+            distance_m=400.0,
+            duration_s=300.0,
+            snapped_waypoints=list(coords),
+            snap_distances_m=[self.snap_distance] + [0.0] * (len(coords) - 1),
+        )
 
 
 class PipelineTests(unittest.TestCase):
@@ -309,6 +380,22 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(len(route_drawings), 2)
         self.assertLess(route_bounds.x1, 250)
         self.assertLess(route_bounds.y1, 250)
+
+    def test_pipeline_reports_large_osrm_snap_distance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            pdf = temp_path / "map.pdf"
+            self._write_map_pdf(pdf)
+
+            summary = hr.run_pipeline(
+                pdf, self._calibration(), temp_path / "out", dpi=72,
+                street_router=FakeStreetRouter(snap_distance=54.0),
+                log=lambda _message: None,
+            )
+
+        circle = next(v for v in summary["variants"]
+                      if v["key"] == "circle")
+        self.assertEqual(circle["max_snap_distance_m"], 54.0)
 
     def test_station_callout_names_the_station_and_its_route_role(self):
         with tempfile.TemporaryDirectory() as temp:

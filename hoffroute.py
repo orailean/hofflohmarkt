@@ -37,6 +37,7 @@ Usage:
 """
 
 import argparse
+from dataclasses import dataclass
 import json
 import math
 import ssl
@@ -271,6 +272,15 @@ def haversine_matrix(coords):
     return 2 * EARTH_R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
 
 
+def coordinate_distance_m(first, second):
+    lat1, lon1 = map(math.radians, first)
+    lat2, lon2 = map(math.radians, second)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    value = (math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) *
+             math.sin(dlon / 2) ** 2)
+    return 2 * EARTH_R * math.asin(math.sqrt(min(1.0, value)))
+
+
 def euclidean_matrix(pts):
     """Euclidean distance matrix from a list of (x, y) pixel pairs."""
     a = np.array(pts, dtype=float)
@@ -384,6 +394,31 @@ class StreetRoutingError(RuntimeError):
     """Raised when a street-following route cannot be calculated."""
 
 
+@dataclass(frozen=True)
+class StreetRoute:
+    geometry: list[tuple[float, float]]
+    distance_m: float
+    duration_s: float
+    snapped_waypoints: list[tuple[float, float]]
+    snap_distances_m: list[float]
+
+
+def validate_geographic_route(route, expected_waypoints, circular):
+    if len(route.snapped_waypoints) != expected_waypoints:
+        raise StreetRoutingError(
+            "street router returned an incomplete waypoint list")
+    if len(route.snap_distances_m) != expected_waypoints:
+        raise StreetRoutingError(
+            "street router returned incomplete snap distances")
+    if len(route.geometry) < 2:
+        raise StreetRoutingError("street router returned empty geometry")
+    if circular and coordinate_distance_m(
+        route.geometry[0], route.geometry[-1]
+    ) > 2.0:
+        raise StreetRoutingError("circular GPS route is not closed")
+    return route
+
+
 class StreetRouter:
     """Pedestrian distances and geometry from the free FOSSGIS OSRM API."""
 
@@ -466,7 +501,8 @@ class StreetRouter:
         return matrix
 
     def route(self, coords):
-        geometry, distance, duration = [], 0.0, 0.0
+        geometry, snapped = [], []
+        distance, duration = 0.0, 0.0
         index = 0
         while index < len(coords) - 1:
             part = coords[index:index + self.route_chunk + 1]
@@ -478,14 +514,43 @@ class StreetRouter:
             if not routes:
                 raise StreetRoutingError("street router returned no route")
             route = routes[0]
+            legs = route.get("legs") or []
+            if len(legs) != len(part) - 1:
+                raise StreetRoutingError(
+                    "street router returned incomplete route legs")
             segment = [
                 (lat, lon) for lon, lat in route["geometry"]["coordinates"]
             ]
-            geometry.extend(segment if not geometry else segment[1:])
+            if len(segment) < 2:
+                raise StreetRoutingError(
+                    "street router returned empty route geometry")
+            if geometry and geometry[-1] == segment[0]:
+                geometry.extend(segment[1:])
+            else:
+                geometry.extend(segment)
+            waypoints = data.get("waypoints") or []
+            if len(waypoints) != len(part):
+                raise StreetRoutingError(
+                    "street router returned an incomplete waypoint list")
+            part_snapped = [
+                (float(item["location"][1]), float(item["location"][0]))
+                for item in waypoints
+            ]
+            snapped.extend(part_snapped if not snapped else part_snapped[1:])
             distance += float(route["distance"])
             duration += float(route["duration"])
             index += self.route_chunk
-        return geometry, distance, duration
+        snap_distances = [
+            coordinate_distance_m(original, routed)
+            for original, routed in zip(coords, snapped)
+        ]
+        return StreetRoute(
+            geometry=geometry,
+            distance_m=distance,
+            duration_s=duration,
+            snapped_waypoints=snapped,
+            snap_distances_m=snap_distances,
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -941,11 +1006,21 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
         try:
             log(f"4/{steps} fetching walking geometry (OSRM) ...")
             for v in variants:
-                track, dist, dur = router.route(
-                    [(la, lo) for la, lo, _ in v["stops"]])
-                v["track"], v["dist"], v["dur"] = track, dist, dur
-                log(f"    {v['key']}: {dist/1000:.2f} km on streets "
-                    f"(~{dur/3600:.1f} h pure walking)")
+                route_coords = [
+                    (la, lo) for la, lo, _ in v["stops"]
+                ]
+                street_route = validate_geographic_route(
+                    router.route(route_coords),
+                    expected_waypoints=len(route_coords),
+                    circular=v["order"][0] == v["order"][-1],
+                )
+                v["track"] = street_route.geometry
+                v["dist"] = street_route.distance_m
+                v["dur"] = street_route.duration_s
+                v["snap_distances_m"] = street_route.snap_distances_m
+                log(f"    {v['key']}: {street_route.distance_m/1000:.2f} km "
+                    f"on streets (~{street_route.duration_s/3600:.1f} h pure "
+                    "walking)")
         except StreetRoutingError as exc:
             gps_available = False
             gps_warning = f"GPS route unavailable: {exc}"
@@ -1044,6 +1119,12 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
                          if gps_available and v.get("dist") else None,
             "walk_h": round(v["dur"] / 3600, 1)
                       if gps_available and v.get("dur") else None,
+            "max_snap_distance_m": round(max(v.get("snap_distances_m", [0])), 1)
+                                   if gps_available else None,
+            "mean_snap_distance_m": round(
+                sum(v.get("snap_distances_m", [0])) /
+                len(v.get("snap_distances_m", [0])), 1)
+                                   if gps_available else None,
             "closed": v["validation"].closed,
             "unique_stops": v["validation"].unique_stop_count,
             "access_spurs": len(v["access_spurs"]),
