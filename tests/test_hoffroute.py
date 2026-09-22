@@ -484,5 +484,22 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(station_span["size"], 8)
 
 
+class CliTests(unittest.TestCase):
+    def test_cli_allows_flyer_route_without_calibration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            pdf = temp_path / "map.pdf"
+            pdf.write_bytes(b"%PDF-placeholder")
+            output = temp_path / "out"
+
+            with mock.patch(
+                "sys.argv",
+                ["hoffroute.py", str(pdf), "-o", str(output)],
+            ), mock.patch("hoffroute.run_pipeline") as pipeline:
+                hr.main()
+
+        self.assertIsNone(pipeline.call_args.args[1])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1208,10 +1208,8 @@ def main():
     if args.find_landmarks:
         find_landmarks(pdf_path, out, args.dpi)
         return
-    if not args.calib:
-        ap.error("--calib is required for street-following routes; "
-                 "run --find-landmarks first")
-    calib = json.loads(Path(args.calib).read_text())
+    calib = (json.loads(Path(args.calib).read_text())
+             if args.calib else None)
 
     run_pipeline(pdf_path, calib, out, dpi=args.dpi, start=args.start,
                  end=args.end)

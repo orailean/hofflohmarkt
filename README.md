@@ -142,7 +142,7 @@ Options:
 
 | Flag | Meaning |
 |------|---------|
-| `--calib FILE` | calibration JSON (required, see below) |
+| `--calib FILE` | optional calibration JSON for station and GPS exports |
 | `-o DIR` | output directory (default `route_out`) |
 | `--start NAME` / `--end NAME` | force start/end station (names from the calibration file) |
 | `--dpi N` | render resolution (default 300; calibration pixel coords must match) |
