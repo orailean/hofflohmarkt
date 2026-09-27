@@ -829,7 +829,7 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     shape = page.new_shape()
     shape.draw_polyline(route_pts)
     shape.finish(color=(0.11, 0.46, 0.84), width=2.2, lineJoin=1, lineCap=1,
-                 stroke_opacity=0.8)
+                 closePath=False, stroke_opacity=0.8)
     shape.commit()
 
     if arrow_triangles:
@@ -846,15 +846,16 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     # Green flag = start, red flag = end (omitted for closed circular tours).
     ph, fw, fh = 13, 9, 6  # pole height, flag width, flag height (PDF points)
 
-    def draw_flag(pt, fill):
-        top = fitz.Point(pt.x, pt.y - ph)
-        mid = fitz.Point(pt.x + fw, pt.y - ph + fh / 2)
-        bot = fitz.Point(pt.x, pt.y - ph + fh)
+    def draw_flag(pt, fill, scale=1):
+        top = fitz.Point(pt.x, pt.y - ph * scale)
+        mid = fitz.Point(pt.x + fw * scale,
+                         pt.y - ph * scale + fh * scale / 2)
+        bot = fitz.Point(pt.x, pt.y - ph * scale + fh * scale)
         sh = page.new_shape()
         sh.draw_line(pt, top)
-        sh.finish(color=(0.15, 0.15, 0.15), width=1.2)
+        sh.finish(color=(0.15, 0.15, 0.15), width=1.2 * scale)
         sh.draw_polyline([top, mid, bot, top])
-        sh.finish(fill=fill, color=fill, width=0.3)
+        sh.finish(fill=fill, color=fill, width=0.3 * scale)
         sh.commit()
 
     draw_flag(pts[0], (0.13, 0.55, 0.13))
@@ -866,19 +867,38 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
     # compact legend below the detected map area.
     if station_labels:
         unique_stations = []
-        seen_stations = set()
+        station_numbers = {}
+        map_badges = []
         for station in station_labels:
             if isinstance(station, dict):
                 name = str(station["name"])
                 kind = str(station.get("kind", "")).upper()
                 role = station.get("role")
+                x, y = station["x"], station["y"]
             else:
-                _x, _y, name = station
+                x, y, name = station
                 kind, role = "", None
             identity = (kind, name, role)
-            if identity not in seen_stations:
-                seen_stations.add(identity)
+            if identity not in station_numbers:
+                station_numbers[identity] = len(unique_stations) + 1
                 unique_stations.append(identity)
+            map_badges.append((station_numbers[identity],
+                                fitz.Point(float(x) * s, float(y) * s)))
+
+        badge_color = (0.07, 0.24, 0.48)
+
+        def draw_station_badge(center, number):
+            badge = page.new_shape()
+            badge.draw_circle(center, 4.8)
+            badge.finish(color=badge_color, fill=(1, 1, 1), width=0.8)
+            badge.commit()
+            number_text = str(number)
+            number_width = fitz.get_text_length(
+                number_text, fontname="hebo", fontsize=6.3)
+            page.insert_text(
+                fitz.Point(center.x - number_width / 2, center.y + 2.1),
+                number_text, fontsize=6.3, fontname="hebo",
+                color=badge_color)
 
         columns = min(3, max(1, math.ceil(len(unique_stations) / 3)))
         rows = math.ceil(len(unique_stations) / columns)
@@ -895,11 +915,18 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
             if role_text:
                 label += f" - {role_text}"
             entry_labels.append(label)
+        flag_offset = 10 if any(
+            role in {"start", "end", "start_end"}
+            for _kind, _name, role in unique_stations
+        ) else 0
+        badge_offset = 14
         if columns == 1:
             widest = max(
                 fitz.get_text_length(label, fontname="hebo", fontsize=7.2)
                 for label in entry_labels)
-            legend_width = min(page.rect.width - 10, max(150, widest + 12))
+            legend_width = min(
+                page.rect.width - 10,
+                max(150, widest + 12 + flag_offset + badge_offset))
         else:
             legend_width = page.rect.width - 10
         map_bottom = (float(map_bbox_px[3]) * s
@@ -915,7 +942,7 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
         legend_shape.draw_rect(legend_rect)
         legend_shape.finish(
             color=(0.16, 0.45, 0.75), fill=(1, 1, 1), width=0.8,
-            fill_opacity=0.88, stroke_opacity=0.9)
+            fill_opacity=1.0, stroke_opacity=0.9)
         legend_shape.commit()
         page.insert_text(
             fitz.Point(legend_rect.x0 + 5, legend_rect.y0 + 9),
@@ -925,13 +952,56 @@ def annotate_pdf(src_doc_path, out_path, order_px, title, color=(0.83, 0.07, 0.4
         for index, label in enumerate(entry_labels):
             column = index // rows
             row = index % rows
+            text_x = legend_rect.x0 + 5 + column * column_width
+            baseline_y = legend_rect.y0 + 20 + row * 12
+            draw_station_badge(
+                fitz.Point(text_x + 5, baseline_y - 2.4), index + 1)
+            role = unique_stations[index][2]
+            if role in {"start", "start_end"}:
+                draw_flag(fitz.Point(text_x + badge_offset + 1,
+                                     baseline_y + 1),
+                          (0.13, 0.55, 0.13), scale=0.55)
+            elif role == "end":
+                draw_flag(fitz.Point(text_x + badge_offset + 1,
+                                     baseline_y + 1),
+                          (0.80, 0.10, 0.10), scale=0.55)
             page.insert_text(
                 fitz.Point(
-                    legend_rect.x0 + 5 + column * column_width,
-                    legend_rect.y0 + 20 + row * 12,
+                    text_x + badge_offset + flag_offset,
+                    baseline_y,
                 ),
                 label, fontsize=7.2, fontname="hebo",
                 color=(0.05, 0.05, 0.05))
+
+        placed_badges = []
+        offsets = ((11, -10), (11, 10), (-11, -10), (-11, 10),
+                   (0, -15), (0, 15))
+        for number, icon in map_badges:
+            center = None
+            for dx, dy in offsets:
+                proposed = fitz.Point(icon.x + dx, icon.y + dy)
+                if (5 <= proposed.x <= page.rect.width - 5 and
+                        5 <= proposed.y <= legend_rect.y0 - 5 and
+                        all(math.hypot(proposed.x - previous.x,
+                                       proposed.y - previous.y) >= 12
+                            for previous in placed_badges)):
+                    center = proposed
+                    break
+            if center is None:
+                center = fitz.Point(icon.x + 11, icon.y - 10)
+            distance = math.hypot(center.x - icon.x, center.y - icon.y)
+            direction_x = (center.x - icon.x) / distance
+            direction_y = (center.y - icon.y) / distance
+            connector = page.new_shape()
+            connector.draw_line(
+                fitz.Point(icon.x + direction_x * 3,
+                           icon.y + direction_y * 3),
+                fitz.Point(center.x - direction_x * 5,
+                           center.y - direction_y * 5))
+            connector.finish(color=badge_color, width=0.65)
+            connector.commit()
+            draw_station_badge(center, number)
+            placed_badges.append(center)
 
     # stop numbers (skip start/end stations)
     for i, p in enumerate(pts[1:-1], start=1):

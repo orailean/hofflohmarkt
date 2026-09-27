@@ -497,13 +497,12 @@ class PipelineTests(unittest.TestCase):
             hr.annotate_pdf(
                 source, output, [(100, 100), (200, 200)], "Test route",
                 dpi=72,
-                station_labels=[{
-                    "x": 100,
-                    "y": 100,
-                    "name": "Aubing Bahnhof",
-                    "kind": "S",
-                    "role": "start",
-                }],
+                station_labels=[
+                    {"x": 100, "y": 100, "name": "Aubing Bahnhof",
+                     "kind": "S", "role": "start"},
+                    {"x": 200, "y": 200, "name": "Leienfelsstraße",
+                     "kind": "S", "role": "end"},
+                ],
                 map_bbox_px=[0, 0, 600, 300],
             )
 
@@ -514,6 +513,11 @@ class PipelineTests(unittest.TestCase):
                 if "lines" in block
                 for line in block["lines"]
                 for span in line["spans"]
+            ]
+            legend_flags = [
+                drawing for drawing in document[0].get_drawings()
+                if drawing["fill"] is not None
+                and drawing["rect"].y0 > 300
             ]
             document.close()
 
@@ -526,6 +530,49 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertGreater(station_span["bbox"][1], 300)
         self.assertGreaterEqual(station_span["size"], 7)
+        for number in ("1", "2"):
+            badges = [span for span in spans if span["text"] == number]
+            self.assertEqual(len(badges), 2)
+            self.assertTrue(any(span["bbox"][1] < 300 for span in badges))
+            self.assertTrue(any(span["bbox"][1] > 300 for span in badges))
+        self.assertTrue(any(
+            np.allclose(drawing["fill"], (0.13, 0.55, 0.13))
+            for drawing in legend_flags
+        ))
+        self.assertTrue(any(
+            np.allclose(drawing["fill"], (0.80, 0.10, 0.10))
+            for drawing in legend_flags
+        ))
+
+    def test_open_flyer_route_does_not_draw_segment_back_to_start(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source.pdf"
+            output = Path(temp) / "annotated.pdf"
+            document = fitz.open()
+            document.new_page(width=300, height=300)
+            document.save(source)
+            document.close()
+
+            route = [(80, 80), (180, 80), (180, 180)]
+            hr.annotate_pdf(
+                source, output, route, "Open route", dpi=72,
+                route_px=route,
+            )
+
+            document = fitz.open(output)
+            route_segments = [
+                item for drawing in document[0].get_drawings()
+                if drawing["color"] is not None
+                and np.allclose(drawing["color"], (0.11, 0.46, 0.84))
+                for item in drawing["items"] if item[0] == "l"
+            ]
+            document.close()
+
+        self.assertFalse(any(
+            np.hypot(item[1].x - item[2].x,
+                     item[1].y - item[2].y) > 110
+            for item in route_segments
+        ))
 
 
 class CliTests(unittest.TestCase):
