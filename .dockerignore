@@ -16,7 +16,6 @@ build
 Dockerfile*
 docker-compose*
 jobs/
-data/
 route_out/
 *.key
 *.pem

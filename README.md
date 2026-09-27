@@ -264,10 +264,8 @@ docker compose up --build
 # UI on http://localhost:8000  (override with PORT in .env, see .env.example)
 ```
 
-Compose stores jobs, calibration and route caches, and logs in `./data/` beside
-`docker-compose.yml`. The `./data/` path is a bind mount into `/data` in the
-container and is ignored by Git. Existing Docker named-volume data is not
-copied automatically into this directory.
+Job data (uploaded PDFs, results) lives in the named volume `jobs`; remove it
+with `docker compose down -v`.
 
 ### Image
 
