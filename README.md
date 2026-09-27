@@ -264,6 +264,10 @@ docker compose up --build
 # UI on http://localhost:8000  (override with PORT in .env, see .env.example)
 ```
 
+After pulling code changes on a server, run `docker compose up -d --build
+--force-recreate` to replace the old app image. Plain `docker compose up -d`
+can keep serving the previous image and UI.
+
 Job data (uploaded PDFs, results) lives in the named volume `jobs`; remove it
 with `docker compose down -v`.
 

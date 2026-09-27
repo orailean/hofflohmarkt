@@ -141,14 +141,17 @@ def _layout_score(predicted, assignment, context):
     return score
 
 
-def _match(icons, control_points, context, candidates):
+def _match(icons, control_points, context, candidates, max_distance_m):
     if not icons:
         return StationResolution([], [])
     predicted = _fit_icon_locations(icons, control_points)
     eligible = [
         [candidate for candidate in candidates
-         if _supports_mode(candidate, _mode(icon[0]))]
-        for icon in icons
+         if _supports_mode(candidate, _mode(icon[0])) and
+         _distance_m({"lat": float(predicted[index, 0]),
+                      "lon": float(predicted[index, 1])}, candidate)
+         <= max_distance_m]
+        for index, icon in enumerate(icons)
     ]
     if any(not group for group in eligible):
         return StationResolution([], [
@@ -203,7 +206,7 @@ def _match(icons, control_points, context, candidates):
 
 
 def resolve_station_icons(icons, control_points, context,
-                          candidate_providers):
+                          candidate_providers, max_distance_m=1200):
     """Resolve all icons jointly, trying free-data providers in order."""
     all_elements = []
     provider_errors = []
@@ -217,7 +220,8 @@ def resolve_station_icons(icons, control_points, context,
             continue
         all_elements.extend(elements)
         result = _match(
-            icons, control_points, context, _deduplicate(elements))
+            icons, control_points, context, _deduplicate(elements),
+            max_distance_m)
         if result.stations:
             return result
     if not all_elements:
@@ -225,4 +229,5 @@ def resolve_station_icons(icons, control_points, context,
         return StationResolution([], [
             f"Station name unavailable for detected transit icon{detail}"
         ])
-    return _match(icons, control_points, context, _deduplicate(all_elements))
+    return _match(icons, control_points, context, _deduplicate(all_elements),
+                  max_distance_m)

@@ -69,8 +69,8 @@ ROUTE_CACHE_DIR = Path(os.environ.get(
 ROUTE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PDF_BYTES = 50 * 1024 * 1024
 RENDER_DPI = 300
-ROUTE_CACHE_VERSION = "flyer-streets-v4"
-CALIB_CACHE_VERSION = "station-resolver-v1"
+ROUTE_CACHE_VERSION = "flyer-streets-v5"
+CALIB_CACHE_VERSION = "station-resolver-v2"
 AUTOCALIB_CONTEXT = os.environ.get(
     "HOFFROUTE_AUTOCALIB_CONTEXT", "Germany")
 AUTOCALIB_MAX_CANDIDATES = int(os.environ.get(
@@ -80,7 +80,7 @@ AUTOCALIB_MAX_RMS_M = float(os.environ.get(
 AUTOCALIB_INLIER_M = float(os.environ.get(
     "HOFFROUTE_AUTOCALIB_INLIER_M", "180"))
 AUTOCALIB_TRANSIT_RADIUS_M = int(os.environ.get(
-    "HOFFROUTE_AUTOCALIB_TRANSIT_RADIUS_M", "500"))
+    "HOFFROUTE_AUTOCALIB_TRANSIT_RADIUS_M", "1200"))
 AUTOCALIB_TRANSIT_TIMEOUT_S = int(os.environ.get(
     "HOFFROUTE_AUTOCALIB_TRANSIT_TIMEOUT_S", "20"))
 OVERPASS_URL = os.environ.get(
@@ -800,7 +800,7 @@ def overpass_transit_candidates(context, control_points, icons):
   way({bbox})["name"]["public_transport"~"station|stop_position|platform"];
   relation({bbox})["name"]["public_transport"~"station|stop_position|platform"];
 );
-out center body 100;
+out center body;
 """
     data = urllib.parse.urlencode({"data": query}).encode()
     last_error = None
@@ -927,6 +927,7 @@ def transit_stations_from_icons(icons, control_points, context=None):
             within_budget(overpass_transit_candidates),
             within_budget(nominatim_transit_candidates),
         ],
+        max_distance_m=AUTOCALIB_TRANSIT_RADIUS_M,
     )
     for warning in result.warnings:
         LOGGER.warning("auto-calibration transit resolution: %s", warning)

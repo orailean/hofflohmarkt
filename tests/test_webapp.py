@@ -75,14 +75,14 @@ class RouteCacheTests(unittest.TestCase):
         with mock.patch.object(webapp, "ROUTE_CACHE_VERSION", "street-v2"):
             legacy = webapp.route_cache_dir("abcdef", calibration)
 
-        self.assertEqual(webapp.ROUTE_CACHE_VERSION, "flyer-streets-v4")
+        self.assertEqual(webapp.ROUTE_CACHE_VERSION, "flyer-streets-v5")
         self.assertNotEqual(current, legacy)
 
     def test_calibration_cache_version_invalidates_old_station_names(self):
         current = webapp.cache_path("abcdef")
         legacy = webapp.CALIB_CACHE_DIR / "abcdef.json"
 
-        self.assertEqual(webapp.CALIB_CACHE_VERSION, "station-resolver-v1")
+        self.assertEqual(webapp.CALIB_CACHE_VERSION, "station-resolver-v2")
         self.assertNotEqual(current, legacy)
 
     def test_result_distinguishes_flyer_and_gps_route_status(self):
@@ -120,6 +120,7 @@ class TransitProviderTests(unittest.TestCase):
         request = open_url.call_args.args[0]
         query = urllib.parse.parse_qs(request.data.decode())["data"][0]
         self.assertNotIn("around:", query)
+        self.assertNotIn("body 100", query)
         self.assertRegex(
             query,
             r'node\(48\.12\d+,11\.3\d+,48\.18\d+,11\.4\d+\)',
