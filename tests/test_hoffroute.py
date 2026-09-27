@@ -321,7 +321,7 @@ class FakeStreetRouter:
 
 
 class PipelineTests(unittest.TestCase):
-    def _write_map_pdf(self, path):
+    def _write_map_pdf(self, path, extra_dot=None):
         document = fitz.open()
         page = document.new_page(width=600, height=600)
         roads = page.new_shape()
@@ -333,7 +333,10 @@ class PipelineTests(unittest.TestCase):
         roads.finish(color=(190 / 255, 218 / 255, 247 / 255), width=7)
         roads.commit()
         shape = page.new_shape()
-        for x, y in ((100, 100), (200, 100), (200, 200), (100, 200)):
+        dots = [(100, 100), (200, 100), (200, 200), (100, 200)]
+        if extra_dot is not None:
+            dots.append(extra_dot)
+        for x, y in dots:
             shape.draw_circle(fitz.Point(x, y), 10)
         pink = tuple(PINK / 255)
         shape.finish(color=pink, fill=pink)
@@ -410,6 +413,20 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(summary["gps_available"])
             self.assertTrue((output / "route_circle.pdf").is_file())
             self.assertFalse((output / "route_circle.gpx").exists())
+
+    def test_pipeline_routes_courtyard_dot_just_over_old_access_limit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            pdf = temp_path / "map.pdf"
+            self._write_map_pdf(pdf, extra_dot=(150, 87))
+
+            summary = hr.run_pipeline(
+                pdf, None, temp_path / "out", dpi=72,
+                log=lambda _message: None,
+            )
+
+            self.assertEqual(summary["dots"], 5)
+            self.assertTrue((temp_path / "out" / "route_circle.pdf").is_file())
 
     def test_pipeline_draws_closed_flyer_graph_route_with_every_access_spur(self):
         with tempfile.TemporaryDirectory() as temp:

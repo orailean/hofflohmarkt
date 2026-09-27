@@ -1030,7 +1030,7 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
     # --- 2. printed-street graph + optional georeferencing ---
     log(f"2/{steps} extracting printed street network ...")
     graph = FlyerStreetGraph.from_image(img, bbox, dpi=dpi)
-    max_access_px = 90.0 * dpi / 300.0
+    max_access_px = 120.0 * dpi / 300.0
     dot_access = graph.snap_stops(dots_px, max_access_px)
 
     stations = list(calib.get("stations", [])) if calibrated else []
