@@ -442,6 +442,10 @@ class PipelineTests(unittest.TestCase):
             )
             circle = next(v for v in summary["variants"]
                           if v["key"] == "circle")
+            self.assertFalse((output / "google_maps_links.txt").exists())
+            self.assertNotIn("google_maps_links.txt", summary["files"])
+            self.assertTrue(circle["gmaps"].startswith(
+                "https://www.google.com/maps/dir/?api=1"))
             self.assertTrue(circle["closed"])
             self.assertEqual(circle["unique_stops"], 4)
             self.assertEqual(circle["access_spurs"], 4)

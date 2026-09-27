@@ -75,7 +75,8 @@ Open http://localhost:8000 and follow the steps: load the flyer (file upload
 **or paste a URL**) and compute. Results show the **original flyer and the
 route-annotated version side by side**, one Google Maps link per route, an
 embedded interactive OpenStreetMap view, and a download grid with every
-artifact.
+artifact. Downloaded files use the flyer's name and the route type, so files
+from different flyers are easy to distinguish.
 
 When no cached calibration exists, the web app attempts a best-effort
 auto-calibration while loading the PDF: it extracts embedded PDF text, falls
@@ -163,10 +164,11 @@ Options:
 | `route_*.kml` | the whole route as **one continuous line** + stops; import into Google My Maps (shows inside the Google Maps app), Google Earth, Organic Maps |
 | `route_*.png`, `original.png` | rendered previews (used for the UI's side-by-side view) |
 | `routes_map.html` | interactive OpenStreetMap (Leaflet) with all routes toggleable — open in a browser |
-| `google_maps_links.txt` | **one Google Maps walking link per route** (whole route in one shot, downsampled to Google's hard 9-waypoint URL limit), plus the exact stop-by-stop legs as an appendix |
 | `routes.geojson` | all routes + stops for GIS tools |
 
-All geographic exports are walking-mode: the Google Maps links use
+The results page provides a direct Google Maps link for each route. The links
+show an overview with up to 9 intermediate waypoints. All geographic exports
+are walking-mode: the Google Maps links use
 `travelmode=walking` and the KML/GPX/HTML geometry comes from the OSRM
 **foot** router. The annotated PDF/PNG uses the flyer's own printed street
 network, so it stays aligned with a stylized map rather than projecting GPS
@@ -262,8 +264,10 @@ docker compose up --build
 # UI on http://localhost:8000  (override with PORT in .env, see .env.example)
 ```
 
-Job data (uploaded PDFs, results) lives in the named volume `jobs`; remove it
-with `docker compose down -v`.
+Compose stores jobs, calibration and route caches, and logs in `./data/` beside
+`docker-compose.yml`. The `./data/` path is a bind mount into `/data` in the
+container and is ignored by Git. Existing Docker named-volume data is not
+copied automatically into this directory.
 
 ### Image
 

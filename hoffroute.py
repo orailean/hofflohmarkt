@@ -631,23 +631,6 @@ def gmaps_overview_link(stops, max_wp=9):
     return "https://www.google.com/maps/dir/?" + urllib.parse.urlencode(q)
 
 
-def gmaps_links(stops, max_wp=9):
-    """Google Maps allows origin + destination + 9 waypoints per link."""
-    links, i = [], 0
-    pts = [(la, lo) for la, lo, _ in stops]
-    while i < len(pts) - 1:
-        part = pts[i:i + max_wp + 2]
-        origin, dest, mid = part[0], part[-1], part[1:-1]
-        q = {"api": "1", "travelmode": "walking",
-             "origin": f"{origin[0]:.6f},{origin[1]:.6f}",
-             "destination": f"{dest[0]:.6f},{dest[1]:.6f}"}
-        if mid:
-            q["waypoints"] = "|".join(f"{la:.6f},{lo:.6f}" for la, lo in mid)
-        links.append("https://www.google.com/maps/dir/?" + urllib.parse.urlencode(q))
-        i += len(part) - 1
-    return links
-
-
 def write_html(path, title, variants, stations):
     layers = []
     for vi, (name, stops, track) in enumerate(variants):
@@ -1268,22 +1251,6 @@ def run_pipeline(pdf_path, calib, out_dir, dpi=300, start=None, end=None,
             write_geojson(out / "routes.geojson", triples)
             write_html(out / "routes_map.html", "Hofflohmaerkte routes",
                        triples, stations)
-            txt = [
-                "# Google Maps - one walking link per route (whole route in one",
-                "# shot, downsampled to Google's 9-waypoint URL limit; import the",
-                "# .kml into Google My Maps for the exact full line).", "",
-            ]
-            for v in variants:
-                txt += [f"## {v['name']}", v["gmaps"], ""]
-            txt += [
-                "# Appendix: exact stop-by-stop legs (9 waypoints per link)", ""
-            ]
-            for v in variants:
-                links = gmaps_links(v["stops"])
-                txt.append(f"## {v['name']} ({len(links)} legs)")
-                txt += [f"{k + 1}. {url}" for k, url in enumerate(links)]
-                txt.append("")
-            (out / "google_maps_links.txt").write_text("\n".join(txt))
     else:
         gps_warning = "GPS route unavailable: no reliable map calibration"
 

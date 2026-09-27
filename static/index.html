@@ -676,6 +676,11 @@ $('solveBtn').onclick = async () => {
 };
 
 // ---------- results ----------
+function downloadName(url) {
+  const name = url.split('/').pop();
+  return summary.download_names?.[name] || name;
+}
+
 function showResults() {
   const hasGPS = summary.gps_route
     ? summary.gps_route.available
@@ -712,7 +717,7 @@ function showResults() {
   }
   const grid = $('fileGrid');
   grid.innerHTML = '';
-  const FILE_ICON = {pdf:'📕', gpx:'🧭', kml:'🌍', png:'🖼️', html:'🗺️', geojson:'🧩', txt:'📋'};
+  const FILE_ICON = {pdf:'📕', gpx:'🧭', kml:'🌍', png:'🖼️', html:'🗺️', geojson:'🧩'};
   const VARIANT_KEYS = ['station_to_station', 'loop', 'circle'];
   function fileInfo(n) {
     const ext = n.split('.').pop();
@@ -723,8 +728,6 @@ function showResults() {
       return {icon, label: t('file.lbl.html'), desc: t('file.dsc.html')};
     if (n === 'routes.geojson')
       return {icon, label: t('file.lbl.geojson'), desc: t('file.dsc.geojson')};
-    if (n === 'google_maps_links.txt')
-      return {icon, label: t('file.lbl.txt'), desc: t('file.dsc.txt')};
     const m = n.match(/^route_(.+)\.([^.]+)$/);
     if (m) {
       const vkey = m[1], fext = m[2];
@@ -739,8 +742,17 @@ function showResults() {
     const {icon, label, desc} = fileInfo(n);
     const a = document.createElement('a');
     a.href = f;
-    if (!n.endsWith('.html')) a.download = n; else a.target = '_blank';
+    a.download = downloadName(f);
     a.innerHTML = `<span class="fi">${icon}</span><span class="fn">${label}</span><span class="fd">${desc}</span>`;
+    grid.appendChild(a);
+  }
+  for (const variant of summary.variants) {
+    if (!variant.gmaps) continue;
+    const a = document.createElement('a');
+    a.href = variant.gmaps;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.innerHTML = `<span class="fi">🗺️</span><span class="fn">${t('file.lbl.gmaps', {variant: t('v.' + variant.key)})}</span><span class="fd">${t('file.dsc.gmaps')}</span>`;
     grid.appendChild(a);
   }
   selectVariant(activeKey && summary.variants.some(v => v.key === activeKey)
@@ -767,10 +779,10 @@ function selectVariant(key) {
   if (summary.gps_route ? summary.gps_route.available : summary.gps_available)
     actions += `<a href="${summary.base}/routes_map.html" target="_blank"><button>${t('act.osm')}</button></a>`;
   if (v.kml)
-    actions += `<a href="${v.kml}" download><button class="ghost">${t('act.kml')}</button></a>`;
+    actions += `<a href="${v.kml}" download="${downloadName(v.kml)}"><button class="ghost">${t('act.kml')}</button></a>`;
   if (v.gpx)
-    actions += `<a href="${v.gpx}" download><button class="ghost">${t('act.gpx')}</button></a>`;
-  actions += `<a href="${v.pdf}" target="_blank"><button class="ghost">${t('act.pdf')}</button></a>`;
+    actions += `<a href="${v.gpx}" download="${downloadName(v.gpx)}"><button class="ghost">${t('act.gpx')}</button></a>`;
+  actions += `<a href="${v.pdf}" download="${downloadName(v.pdf)}"><button class="ghost">${t('act.pdf')}</button></a>`;
   $('vactions').innerHTML = actions;
 }
 

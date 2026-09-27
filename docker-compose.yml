@@ -12,7 +12,7 @@ services:
       HOFFROUTE_JOBS_DIR: /data/jobs
       APP_PORT: ${APP_PORT:-8000}
     volumes:
-      - jobs:/data/jobs
+      - ./data:/data
     restart: unless-stopped
     deploy:
       resources:
@@ -26,6 +26,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-
-volumes:
-  jobs:

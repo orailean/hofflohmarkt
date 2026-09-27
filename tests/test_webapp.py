@@ -13,6 +13,45 @@ TRANSIT_FIXTURE = json.loads(
 
 
 class RouteCacheTests(unittest.TestCase):
+    def test_download_names_identify_source_route_and_format(self):
+        raw = {
+            "variants": [{"key": "circle", "pdf": "route_circle.pdf",
+                          "png": "route_circle.png", "gpx": "route_circle.gpx",
+                          "kml": "route_circle.kml",
+                          "gmaps": "https://www.google.com/maps/dir/?api=1"}],
+            "files": ["original.png", "route_circle.pdf",
+                      "route_circle.png", "route_circle.gpx",
+                      "route_circle.kml", "routes_map.html",
+                      "routes.geojson", "google_maps_links.txt"],
+        }
+
+        result = webapp.build_response(
+            raw, [], "/jobs/123/out",
+            source_name="hofflohmaerkte-hombruch-260926.pdf")
+
+        self.assertEqual(result["download_names"], {
+            "original.png": "hofflohmaerkte-hombruch-260926-original-preview.png",
+            "route_circle.pdf": "hofflohmaerkte-hombruch-260926-circle-route.pdf",
+            "route_circle.png": "hofflohmaerkte-hombruch-260926-circle-preview.png",
+            "route_circle.gpx": "hofflohmaerkte-hombruch-260926-circle-route.gpx",
+            "route_circle.kml": "hofflohmaerkte-hombruch-260926-circle-route.kml",
+            "routes_map.html": "hofflohmaerkte-hombruch-260926-interactive-map.html",
+            "routes.geojson": "hofflohmaerkte-hombruch-260926-all-routes.geojson",
+        })
+        self.assertNotIn("google_maps_links.txt", result["files"])
+        self.assertEqual(result["variants"][0]["gmaps"],
+                         "https://www.google.com/maps/dir/?api=1")
+        self.assertEqual(result["variants"][0]["pdf"],
+                         "/jobs/123/out/route_circle.pdf")
+
+    def test_generic_upload_name_uses_hash_to_distinguish_downloads(self):
+        result = webapp.build_response(
+            {"variants": [], "files": ["route_loop.pdf"]}, [],
+            source_name="map.pdf", pdf_hash="1234567890abcdef")
+
+        self.assertEqual(result["download_names"]["route_loop.pdf"],
+                         "map-12345678-loop-route.pdf")
+
     def test_cache_key_changes_with_selected_route_endpoints(self):
         calibration = {
             "control_points": [

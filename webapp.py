@@ -30,6 +30,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -311,12 +312,46 @@ def route_cache_dir(pdf_hash: str | None, calib, start=None, end=None) -> Path |
     return ROUTE_CACHE_DIR / f"{pdf_hash[:20]}_{options_hash}"
 
 
-def build_response(raw_summary, log_lines, base=""):
+def artifact_download_names(files, source_name=None, pdf_hash=None):
+    """Give downloads source-specific names without renaming cached files."""
+    stem = Path(str(source_name or "flyer")).stem
+    stem = unicodedata.normalize("NFKD", stem.replace("ß", "ss"))
+    stem = stem.encode("ascii", "ignore").decode()
+    stem = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-") or "flyer"
+    if stem in {"map", "flyer"} and pdf_hash:
+        stem += f"-{pdf_hash[:8]}"
+
+    specials = {
+        "original.png": "original-preview.png",
+        "routes_map.html": "interactive-map.html",
+        "routes.geojson": "all-routes.geojson",
+    }
+    names = {}
+    for name in files:
+        if name in specials:
+            suffix = specials[name]
+        else:
+            match = re.fullmatch(r"route_([a-z_]+)\.(pdf|png|gpx|kml)", name)
+            if match:
+                variant, extension = match.groups()
+                purpose = "preview" if extension == "png" else "route"
+                suffix = f"{variant.replace('_', '-')}-{purpose}.{extension}"
+            else:
+                suffix = name
+        names[name] = f"{stem}-{suffix}"
+    return names
+
+
+def build_response(raw_summary, log_lines, base="", source_name=None,
+                   pdf_hash=None):
     """Add job URLs without changing the cached raw summary."""
     summary = dict(raw_summary)
     summary["variants"] = [dict(variant)
                            for variant in raw_summary.get("variants", [])]
-    summary["files"] = list(raw_summary.get("files", []))
+    summary["files"] = [name for name in raw_summary.get("files", [])
+                        if name != "google_maps_links.txt"]
+    summary["download_names"] = artifact_download_names(
+        summary["files"], source_name, pdf_hash)
     summary["log"] = list(log_lines)
     summary["base"] = base
     if not base:
@@ -1029,7 +1064,8 @@ def delete_calibration_cache(payload: dict, request: Request):
     }
 
 
-def _run_prepare(jid: str, pdf_path: Path | None, url: str | None):
+def _run_prepare(jid: str, pdf_path: Path | None, url: str | None,
+                 uploaded_name: str | None = None):
     d = JOBS_DIR / jid
     result_path = d / "result.json"
 
@@ -1062,6 +1098,7 @@ def _run_prepare(jid: str, pdf_path: Path | None, url: str | None):
         (d / "meta.json").write_text(json.dumps({
             "pdf_hash": pdf_hash,
             "pdf_name": pdf.name,
+            "source_name": uploaded_name or pdf.name,
         }, indent=2))
         cached_calib = load_cached_calib(pdf_hash)
         auto_calib = None
@@ -1133,7 +1170,8 @@ def prepare(file: UploadFile | None = None, url: str = Form(None)):
             shutil.rmtree(d, ignore_errors=True)
             raise HTTPException(400, "URL must be http(s)")
 
-    _prepare_executor.submit(_run_prepare, jid, pdf_path, url)
+    _prepare_executor.submit(
+        _run_prepare, jid, pdf_path, url, file.filename if file else None)
     return {"job_id": jid, "status": "processing"}
 
 
@@ -1200,6 +1238,8 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
                 raw,
                 ["(Ergebnis aus Cache geladen / served from route cache)"],
                 base,
+                source_name=meta.get("source_name") or meta.get("pdf_name"),
+                pdf_hash=pdf_hash,
             )
             LOGGER.info(
                 "solve complete (cached) job_id=%s variants=%d files=%d",
@@ -1250,7 +1290,10 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
             except Exception as e:
                 LOGGER.warning("solve route cache save failed: %s", e)
 
-        summary = build_response(summary, log_lines, base)
+        summary = build_response(
+            summary, log_lines, base,
+            source_name=meta.get("source_name") or meta.get("pdf_name"),
+            pdf_hash=pdf_hash)
         LOGGER.info(
             "solve complete job_id=%s variants=%d files=%d",
             jid, len(summary["variants"]), len(summary["files"]))
