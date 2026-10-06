@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 
@@ -39,6 +40,35 @@ def _job_names(jobs_root):
         if isinstance(pdf_hash, str) and _PDF_HASH.fullmatch(pdf_hash) and source:
             names.setdefault(pdf_hash[:20], str(source))
     return names
+
+
+def _source_details(source):
+    parts = [part for part in re.split(r"[-_\s]+", Path(str(source)).stem)
+             if part]
+    if parts and parts[0].casefold() in {
+            "hofflohmaerkte", "hofflohmärkte", "hofflohmarkt"}:
+        parts.pop(0)
+    updated = bool(parts and parts[-1].casefold() in {"neu", "new", "updated"})
+    if updated:
+        parts.pop()
+    map_date = None
+    for index, part in enumerate(parts):
+        if not re.fullmatch(r"\d{6}|\d{8}", part):
+            continue
+        try:
+            parsed = datetime.strptime(part, "%d%m%y" if len(part) == 6
+                                       else "%d%m%Y")
+        except ValueError:
+            continue
+        map_date = parsed.date().isoformat()
+        parts.pop(index)
+        break
+    place = []
+    for part in parts:
+        direction = re.fullmatch(r"(.{5,}?)(nord|sued|süd|west|ost)",
+                                 part, re.IGNORECASE)
+        place.extend(direction.groups() if direction else [part])
+    return " ".join(word.capitalize() for word in place) or "Map", map_date, updated
 
 
 def _route(cache_root, route_id, job_names):
@@ -78,16 +108,28 @@ def _route(cache_root, route_id, job_names):
     prefix = route_id[:20]
     source = meta.get("source_name") or job_names.get(prefix)
     if source:
-        title = Path(str(source)).stem.replace("_", "-")
+        title, map_date, updated_map = _source_details(source)
     else:
         name = variants[0].get("name") or "Map"
-        title = f"{name} ({prefix})"
+        title = re.sub(r"^Hofflohmaerkte\s+", "", str(name),
+                       flags=re.IGNORECASE).strip()
+        loop = re.fullmatch(r"loop from\s+(.+)", title, re.IGNORECASE)
+        if loop:
+            title = loop.group(1)
+        elif re.fullmatch(r"circular tour \(dots only\)", title,
+                          re.IGNORECASE):
+            title = "Unnamed flyer"
+        elif title:
+            title = title[0].upper() + title[1:]
+        map_date, updated_map = None, False
     return {
         "id": route_id,
         "pdf_hash_prefix": prefix,
         "pdf_hash": meta.get("pdf_hash"),
         "source_name": source,
         "title": title,
+        "map_date": map_date,
+        "updated_map": updated_map,
         "created_at": meta.get("created_at") or path.stat().st_mtime,
         "start": meta.get("start"),
         "end": meta.get("end"),
@@ -121,6 +163,31 @@ def list_routes(cache_root: Path, jobs_root: Path,
 def get_route(cache_root: Path, jobs_root: Path, route_id: str) -> dict | None:
     """Get a complete route, including one superseded after a page opened."""
     return _route(cache_root, route_id, _job_names(jobs_root))
+
+
+def delete_map(cache_root: Path, pdf_hash_prefix: str) -> int:
+    """Remove every cached generation for a map under its calculation lock."""
+    if not re.fullmatch(r"[0-9a-f]{20}", pdf_hash_prefix):
+        raise ValueError("invalid PDF hash prefix")
+    with map_lock(cache_root, pdf_hash_prefix):
+        paths = [path for path in cache_root.iterdir()
+                 if path.is_dir() and not path.is_symlink()
+                 and _ROUTE_ID.fullmatch(path.name)
+                 and path.name.startswith(pdf_hash_prefix + "_")]
+        for path in paths:
+            shutil.rmtree(path)
+        return len(paths)
+
+
+def delete_all(cache_root: Path) -> int:
+    """Remove every cached route after active calculations finish."""
+    with _catalog_lock(cache_root, exclusive=True):
+        paths = [path for path in cache_root.iterdir()
+                 if path.is_dir() and not path.is_symlink()
+                 and _ROUTE_ID.fullmatch(path.name)]
+        for path in paths:
+            shutil.rmtree(path)
+        return len(paths)
 
 
 def publish_route(cache_root: Path, cache_key: str, out_dir: Path,
@@ -164,15 +231,27 @@ def publish_route(cache_root: Path, cache_key: str, out_dir: Path,
 
 
 @contextmanager
-def map_lock(cache_root: Path, pdf_hash: str):
-    """Serialize calculations for a PDF across threads and processes."""
-    if not _PDF_HASH.fullmatch(pdf_hash):
-        raise ValueError("invalid PDF hash")
+def _catalog_lock(cache_root: Path, exclusive: bool):
     lock_dir = cache_root / ".locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
-    with (lock_dir / f"{pdf_hash}.lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+    with (lock_dir / "catalog.lock").open("a+b") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         try:
             yield
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+@contextmanager
+def map_lock(cache_root: Path, pdf_hash: str):
+    """Serialize calculations for a PDF across threads and processes."""
+    if not re.fullmatch(r"[0-9a-f]{20}(?:[0-9a-f]{44})?", pdf_hash):
+        raise ValueError("invalid PDF hash or prefix")
+    with _catalog_lock(cache_root, exclusive=False):
+        lock_dir = cache_root / ".locks"
+        with (lock_dir / f"{pdf_hash[:20]}.lock").open("a+b") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)

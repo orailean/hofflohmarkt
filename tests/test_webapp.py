@@ -182,6 +182,9 @@ class RouteApiTests(unittest.TestCase):
             overview = webapp.routes_list()
             result = webapp.route_result(route_id)
         self.assertEqual(overview["routes"][0]["id"], route_id)
+        self.assertEqual(overview["routes"][0]["title"], "Aubing")
+        self.assertIsNone(overview["routes"][0]["map_date"])
+        self.assertFalse(overview["routes"][0]["updated_map"])
         self.assertNotIn("path", overview["routes"][0])
         self.assertNotIn("summary", overview["routes"][0])
         self.assertEqual(result["variants"][0]["pdf"],
@@ -248,6 +251,48 @@ class RouteApiTests(unittest.TestCase):
             response = webapp.admin_prepare(jid, self.request(admin=True))
         self.assertEqual(response["status"], "processing")
         submit.assert_called_once()
+
+    def test_admin_map_delete_requires_login_and_removes_cached_files(self):
+        first = self.cached_route()
+        second = self.cached_route()
+        prefix = self.pdf_hash[:20]
+
+        with self.assertRaises(HTTPException) as error:
+            webapp.admin_delete_map(prefix, self.request())
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertIsNotNone(route_catalog.get_route(self.cache, self.jobs, first))
+
+        with mock.patch.object(webapp, "MANUAL_USERS", {"admin": "pw"}):
+            result = webapp.admin_delete_map(prefix, self.request(admin=True))
+        self.assertEqual(result["deleted_route_sets"], 2)
+        self.assertFalse((self.cache / first).exists())
+        self.assertFalse((self.cache / second).exists())
+        self.assertEqual(webapp.routes_list()["routes"], [])
+
+    def test_admin_map_delete_rejects_unknown_prefix(self):
+        with mock.patch.object(webapp, "MANUAL_USERS", {"admin": "pw"}):
+            with self.assertRaises(HTTPException) as error:
+                webapp.admin_delete_map("f" * 20, self.request(admin=True))
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_admin_clear_all_requires_login_and_removes_every_map(self):
+        first = self.cached_route()
+        other = self.cache / ("d" * 20 + "_" + "e" * 20)
+        other.mkdir()
+        (other / "raw_summary.json").write_text("{}")
+
+        with self.assertRaises(HTTPException) as error:
+            webapp.admin_delete_all_maps(self.request())
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertTrue((self.cache / first).exists())
+        self.assertTrue(other.exists())
+
+        with mock.patch.object(webapp, "MANUAL_USERS", {"admin": "pw"}):
+            result = webapp.admin_delete_all_maps(self.request(admin=True))
+        self.assertEqual(result["deleted_route_sets"], 2)
+        self.assertFalse((self.cache / first).exists())
+        self.assertFalse(other.exists())
+        self.assertEqual(webapp.routes_list()["routes"], [])
 
     def test_first_public_solve_publishes_and_later_options_reuse_it(self):
         first = self.make_job()

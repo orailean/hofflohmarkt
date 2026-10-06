@@ -81,6 +81,10 @@ again.
 Matching uses the PDF contents, not the upload filename. Logged-in admins can
 load that PDF and use **Admin route controls → Recalculate routes** to replace
 a selected saved route set.
+Admins can also use **Delete cached map** on a carousel card to remove all
+saved route sets and artifacts for that PDF, or **Clear all cached maps** to
+empty the catalog. Both actions ask for confirmation. A later visitor can
+calculate routes for those maps again.
 
 Results show the **original flyer and the
 route-annotated version side by side**, one Google Maps link per route, an

@@ -58,8 +58,47 @@ class RouteCatalogTests(unittest.TestCase):
 
         (job / "meta.json").unlink()
         fallback = route_catalog.list_routes(self.cache, self.jobs, HASH)
-        self.assertTrue(any("Aubing circuit" in r["title"] and
-                            HASH[:20] in r["title"] for r in fallback))
+        self.assertTrue(any(r["title"] == "Aubing circuit" for r in fallback))
+
+    def test_source_filename_becomes_place_and_event_date(self):
+        self.make_route()
+        job = self.jobs / "stadtpark"
+        job.mkdir()
+        (job / "meta.json").write_text(json.dumps({
+            "pdf_hash": HASH,
+            "source_name": "hofflohmaerkte-stadtparkviertel-181026-neu.pdf",
+        }))
+
+        route = route_catalog.list_routes(self.cache, self.jobs, HASH)[0]
+        self.assertEqual(route["title"], "Stadtparkviertel")
+        self.assertEqual(route["map_date"], "2026-10-18")
+        self.assertTrue(route["updated_map"])
+
+    def test_compact_direction_suffix_is_readable(self):
+        self.make_route()
+        job = self.jobs / "pasing"
+        job.mkdir()
+        (job / "meta.json").write_text(json.dumps({
+            "pdf_hash": HASH,
+            "source_name": "hofflohmaerkte-pasingnord-171026.pdf",
+        }))
+
+        route = route_catalog.list_routes(self.cache, self.jobs, HASH)[0]
+        self.assertEqual(route["title"], "Pasing Nord")
+        self.assertEqual(route["map_date"], "2026-10-17")
+        self.assertFalse(route["updated_map"])
+
+    def test_legacy_route_name_without_filename_uses_place_or_honest_fallback(self):
+        self.make_route(name="Hofflohmaerkte loop from Essen-Kupferdreh")
+        route = route_catalog.list_routes(self.cache, self.jobs, HASH)[0]
+        self.assertEqual(route["title"], "Essen-Kupferdreh")
+
+        summary_path = self.cache / OLD_ID / "raw_summary.json"
+        summary = json.loads(summary_path.read_text())
+        summary["variants"][0]["name"] = "Hofflohmaerkte circular tour (dots only)"
+        summary_path.write_text(json.dumps(summary))
+        route = route_catalog.list_routes(self.cache, self.jobs, HASH)[0]
+        self.assertEqual(route["title"], "Unnamed flyer")
 
     def test_incomplete_entries_are_not_listed(self):
         good = self.make_route()
@@ -119,6 +158,72 @@ class RouteCatalogTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in route_catalog.list_routes(
             self.cache, self.jobs, HASH)], [OLD_ID])
 
+    def test_delete_map_removes_all_route_generations_only_for_that_map(self):
+        first = self.make_route()
+        second_id = "a" * 20 + "_" + "c" * 20
+        self.make_route(second_id)
+        other_id = "d" * 20 + "_" + "e" * 20
+        self.make_route(other_id)
+        summary = json.loads((first / "raw_summary.json").read_text())
+        replacement = route_catalog.publish_route(
+            self.cache, OLD_ID, first, summary,
+            {"pdf_hash": HASH, "source_name": "aubing.pdf"},
+            supersedes=OLD_ID)
+
+        removed = route_catalog.delete_map(self.cache, HASH[:20])
+
+        self.assertEqual(removed, 3)
+        self.assertEqual([r["id"] for r in route_catalog.list_routes(
+            self.cache, self.jobs)], [other_id])
+        self.assertFalse((self.cache / OLD_ID).exists())
+        self.assertFalse((self.cache / second_id).exists())
+        self.assertFalse((self.cache / replacement).exists())
+
+    def test_delete_map_rejects_invalid_prefix(self):
+        self.make_route()
+        with self.assertRaises(ValueError):
+            route_catalog.delete_map(self.cache, "../")
+        self.assertTrue((self.cache / OLD_ID).exists())
+
+    def test_delete_all_removes_every_cached_map(self):
+        self.make_route()
+        other_id = "d" * 20 + "_" + "e" * 20
+        self.make_route(other_id)
+
+        removed = route_catalog.delete_all(self.cache)
+
+        self.assertEqual(removed, 2)
+        self.assertEqual(route_catalog.list_routes(self.cache, self.jobs), [])
+
+    def test_delete_all_waits_for_active_map_calculation(self):
+        self.make_route()
+        entered = threading.Event()
+        release = threading.Event()
+        deleted = threading.Event()
+
+        def solve():
+            with route_catalog.map_lock(self.cache, HASH):
+                entered.set()
+                release.wait(2)
+
+        def clear():
+            entered.wait(2)
+            route_catalog.delete_all(self.cache)
+            deleted.set()
+
+        first = threading.Thread(target=solve)
+        second = threading.Thread(target=clear)
+        first.start()
+        second.start()
+        self.assertTrue(entered.wait(2))
+        time.sleep(0.05)
+        self.assertFalse(deleted.is_set())
+        release.set()
+        first.join(2)
+        second.join(2)
+        self.assertTrue(deleted.is_set())
+        self.assertEqual(route_catalog.list_routes(self.cache, self.jobs), [])
+
     def test_same_map_lock_serializes_threads(self):
         entered = threading.Event()
         release = threading.Event()
@@ -147,6 +252,33 @@ class RouteCatalogTests(unittest.TestCase):
         t1.join(2)
         t2.join(2)
         self.assertTrue(second_entered.is_set())
+
+    def test_full_hash_and_prefix_share_a_map_lock(self):
+        entered = threading.Event()
+        release = threading.Event()
+        deleted = threading.Event()
+
+        def solve():
+            with route_catalog.map_lock(self.cache, HASH):
+                entered.set()
+                release.wait(2)
+
+        def delete():
+            entered.wait(2)
+            with route_catalog.map_lock(self.cache, HASH[:20]):
+                deleted.set()
+
+        first = threading.Thread(target=solve)
+        second = threading.Thread(target=delete)
+        first.start()
+        second.start()
+        self.assertTrue(entered.wait(2))
+        time.sleep(0.05)
+        self.assertFalse(deleted.is_set())
+        release.set()
+        first.join(2)
+        second.join(2)
+        self.assertTrue(deleted.is_set())
 
 
 if __name__ == "__main__":

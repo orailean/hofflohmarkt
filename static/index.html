@@ -60,6 +60,7 @@
   button:hover { filter:brightness(1.08); }
   button:disabled { opacity:.45; cursor:default; }
   button.ghost { background:#f1f3f5; color:var(--ink); }
+  button.danger { background:#fff0f0; color:#c92a2a; }
   button.primary { background:var(--pink-d); }
   summary { list-style:none; outline:none; }
   summary::-webkit-details-marker { display:none; }
@@ -199,6 +200,9 @@
     </div>
     <input type="search" id="overviewSearch" data-i18n-ph="cache.search"
            placeholder="Search calculated routes" autocomplete="off">
+    <button id="overviewClearAll" class="ghost danger" type="button"
+            data-i18n="cache.clearAll" style="display:none"></button>
+    <div class="err" id="overviewDeleteError" role="alert"></div>
     <p class="muted" id="overviewEmpty" data-i18n="cache.empty"></p>
     <p class="muted" id="overviewNoMatch" data-i18n="cache.noMatch" style="display:none"></p>
     <div id="overviewList" aria-label="Calculated maps"></div>
@@ -414,6 +418,7 @@ function updateManualAccess() {
   }
   renumberSteps();
   refreshStationSelects();
+  renderRouteOverview();
 }
 
 function updateSolveLabel() {
@@ -427,11 +432,46 @@ function routeButton(route, number) {
   return button;
 }
 
+function formatMapDate(value) {
+  if (!value) return '';
+  const date = new Date(value + 'T12:00:00Z');
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat(currentLang(), {
+    day:'numeric', month:'short', year:'numeric', timeZone:'UTC'
+  }).format(date);
+}
+
+function mapDisplayTitle(route) {
+  const date = formatMapDate(route.map_date);
+  const name = route.title === 'Unnamed flyer' ? t('cache.unnamedFlyer') : route.title;
+  return [name, date, route.updated_map ? t('cache.updated') : '']
+    .filter(Boolean).join(' · ');
+}
+
+function routeTypes(route) {
+  return route.variants.map(variant => t('v.' + variant.key)).join(' · ');
+}
+
+function routeDescription(route) {
+  const endpoints = route.start || route.end
+    ? `${route.start || t('step3.auto')} → ${route.end || t('step3.auto')} · `
+    : '';
+  return t('cache.routeTypes', {types: endpoints + routeTypes(route)});
+}
+
+function savedAt(route) {
+  const value = route.created_at;
+  const date = new Date(typeof value === 'number' ? value * 1000 : value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat(currentLang(), {
+    day:'2-digit', month:'2-digit', year:'2-digit',
+    hour:'2-digit', minute:'2-digit'
+  }).format(date);
+}
+
 function routeSetLabel(route, number) {
-  const name = t('cache.setLabel', {n: number, id: route.id.slice(-8)});
-  return route.start || route.end
-    ? `${name} · ${route.start || t('step3.auto')} → ${route.end || t('step3.auto')}`
-    : name;
+  const date = savedAt(route);
+  return date ? t('cache.savedAt', {date}) : t('cache.option', {n: number});
 }
 
 function updateOverviewNav() {
@@ -451,7 +491,8 @@ function searchText(value) {
 function mapMatchesSearch(routes, query) {
   if (!query) return true;
   return routes.some(route => searchText([
-    route.title, route.start, route.end, route.pdf_hash_prefix,
+    route.title, mapDisplayTitle(route), route.start, route.end,
+    route.pdf_hash_prefix,
     ...route.variants.flatMap(variant => [variant.name, t('v.' + variant.key)]),
   ].join(' ')).includes(query));
 }
@@ -471,38 +512,86 @@ function renderRouteOverview() {
     mapMatchesSearch(routes, query));
   $('overviewEmpty').style.display = groups.size ? 'none' : '';
   $('overviewNoMatch').style.display = groups.size && !matches.length ? '' : 'none';
+  $('overviewClearAll').style.display = auth.authenticated && groups.size ? '' : 'none';
   for (const routes of matches) {
     const card = document.createElement('div');
     card.className = 'cache-map';
     const preview = document.createElement('img');
     preview.src = `/api/routes/${routes[0].id}/files/original.png`;
-    preview.alt = routes[0].title;
+    preview.alt = mapDisplayTitle(routes[0]);
     preview.loading = 'lazy';
     card.appendChild(preview);
     const body = document.createElement('div');
     body.className = 'cache-map-body';
     const title = document.createElement('h3');
-    title.textContent = routes[0].title;
+    title.textContent = mapDisplayTitle(routes[0]);
     body.appendChild(title);
     const count = document.createElement('span');
     count.className = 'muted';
-    count.textContent = t(routes.length === 1 ? 'cache.routeCountOne' :
-      'cache.routeCountMany', {n: routes.length});
+    count.textContent = routes.length === 1
+      ? routeDescription(routes[0])
+      : t('cache.routeCountMany', {n: routes.length});
     body.appendChild(count);
-    const select = document.createElement('select');
-    select.setAttribute('aria-label', t('cache.chooseSet'));
-    routes.forEach((route, index) => {
-      const option = document.createElement('option');
-      option.value = route.id;
-      option.textContent = routeSetLabel(route, index + 1);
-      select.appendChild(option);
-    });
-    body.appendChild(select);
+    let selectedRouteId = routes[0].id;
+    if (routes.length > 1) {
+      const select = document.createElement('select');
+      select.setAttribute('aria-label', t('cache.chooseSet'));
+      routes.forEach((route, index) => {
+        const option = document.createElement('option');
+        option.value = route.id;
+        option.textContent = routeSetLabel(route, index + 1);
+        select.appendChild(option);
+      });
+      body.appendChild(select);
+      const description = document.createElement('span');
+      description.className = 'muted';
+      description.textContent = routeDescription(routes[0]);
+      select.onchange = () => {
+        selectedRouteId = select.value;
+        const selected = routes.find(route => route.id === selectedRouteId);
+        description.textContent = routeDescription(selected);
+      };
+      body.appendChild(description);
+    }
     const open = document.createElement('button');
     open.className = 'primary';
     open.textContent = t('cache.open');
-    open.onclick = () => openCachedRoute(select.value);
+    open.onclick = () => openCachedRoute(selectedRouteId);
     body.appendChild(open);
+    if (auth.authenticated) {
+      const remove = document.createElement('button');
+      remove.className = 'ghost danger';
+      remove.textContent = t('cache.deleteMap');
+      const error = document.createElement('span');
+      error.className = 'err';
+      remove.onclick = async () => {
+        if (!window.confirm(t('cache.deleteMapConfirm',
+                              {name: mapDisplayTitle(routes[0])}))) return;
+        remove.disabled = true;
+        error.textContent = '';
+        try {
+          const response = await fetch(
+            `/api/admin/maps/${routes[0].pdf_hash_prefix}`, {method:'DELETE'});
+          if (!response.ok) {
+            let detail;
+            try { detail = (await response.json()).detail; } catch (_) {}
+            throw new Error(detail || response.statusText);
+          }
+          if (selectedCacheId?.startsWith(routes[0].pdf_hash_prefix + '_') ||
+              cachedRoutes.some(route =>
+                route.pdf_hash_prefix === routes[0].pdf_hash_prefix)) {
+            clearDisplayedRoute();
+          }
+          $('overviewDeleteError').textContent = '';
+          await refreshRouteOverview();
+        } catch (e) {
+          error.textContent = t('cache.deleteError', {message:e.message});
+          remove.disabled = false;
+        }
+      };
+      body.appendChild(remove);
+      body.appendChild(error);
+    }
     card.appendChild(body);
     container.appendChild(card);
   }
@@ -511,6 +600,40 @@ function renderRouteOverview() {
 }
 
 $('overviewSearch').oninput = renderRouteOverview;
+
+function clearDisplayedRoute() {
+  selectedCacheId = null;
+  cachedJobId = null;
+  cachedRoutes = [];
+  summary = null;
+  job = null;
+  adminRecalculate = false;
+  for (const id of ['results', 'cachedMatch', 'adminArea', 'step2', 'step3'])
+    $(id).style.display = 'none';
+  renumberSteps();
+}
+
+$('overviewClearAll').onclick = async () => {
+  if (!window.confirm(t('cache.clearAllConfirm'))) return;
+  const button = $('overviewClearAll');
+  const error = $('overviewDeleteError');
+  button.disabled = true;
+  error.textContent = '';
+  try {
+    const response = await fetch('/api/admin/maps', {method:'DELETE'});
+    if (!response.ok) {
+      let detail;
+      try { detail = (await response.json()).detail; } catch (_) {}
+      throw new Error(detail || response.statusText);
+    }
+    clearDisplayedRoute();
+    await refreshRouteOverview();
+  } catch (e) {
+    error.textContent = t('cache.clearAllError', {message:e.message});
+  } finally {
+    button.disabled = false;
+  }
+};
 
 function renderCachedRoutes() {
   const container = $('cachedRouteList');

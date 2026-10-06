@@ -379,8 +379,8 @@ def read_json(path: Path):
 def public_route_entry(route: dict) -> dict:
     """Return catalog fields suitable for the public overview."""
     return {key: route[key] for key in (
-        "id", "pdf_hash_prefix", "title", "created_at", "start", "end",
-        "variants")}
+        "id", "pdf_hash_prefix", "title", "map_date", "updated_map",
+        "created_at", "start", "end", "variants")}
 
 
 def matching_routes(pdf_hash: str) -> list[dict]:
@@ -426,6 +426,32 @@ def route_file(route_id: str, filename: str, download: bool = False):
     return FileResponse(
         path, filename=names[filename],
         content_disposition_type="attachment" if download else "inline")
+
+
+@app.delete("/api/admin/maps/{pdf_hash_prefix}")
+def admin_delete_map(pdf_hash_prefix: str, request: Request):
+    user = auth_user_from_request(request)
+    if user is None:
+        raise HTTPException(403, "admin login required")
+    try:
+        deleted = route_catalog.delete_map(ROUTE_CACHE_DIR, pdf_hash_prefix)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    if not deleted:
+        raise HTTPException(404, "unknown cached map")
+    LOGGER.info("admin deleted cached map prefix=%s route_sets=%d user=%s",
+                pdf_hash_prefix, deleted, user)
+    return {"deleted_route_sets": deleted}
+
+
+@app.delete("/api/admin/maps")
+def admin_delete_all_maps(request: Request):
+    user = auth_user_from_request(request)
+    if user is None:
+        raise HTTPException(403, "admin login required")
+    deleted = route_catalog.delete_all(ROUTE_CACHE_DIR)
+    LOGGER.info("admin cleared cached maps route_sets=%d user=%s", deleted, user)
+    return {"deleted_route_sets": deleted}
 
 
 def validate_calib(calib, strict=True):

@@ -24,14 +24,17 @@ class RouteOverviewUiTests(unittest.TestCase):
         parser.feed(Path(response.path).read_text(encoding="utf-8"))
         self.assertTrue({"routeOverview", "cachedMatch", "cachedRouteList",
                          "adminArea", "adminRebuildBtn", "overviewList",
-                         "overviewPrev", "overviewNext"}.issubset(parser.ids))
+                         "overviewPrev", "overviewNext", "overviewClearAll",
+                         "overviewDeleteError"}.issubset(parser.ids))
 
     def test_route_controls_have_labels_in_every_supported_language(self):
         required = {"cache.title", "cache.empty", "cache.open", "cache.match",
                     "cache.rebuild", "cache.adminIntro", "cache.set",
-                    "cache.previous", "cache.next", "cache.routeCountOne",
-                    "cache.routeCountMany",
-                    "cache.chooseSet", "cache.setLabel"}
+                    "cache.previous", "cache.next", "cache.routeCountMany",
+                    "cache.routeTypes", "cache.savedAt", "cache.option",
+                    "cache.updated", "cache.unnamedFlyer", "cache.chooseSet",
+                    "cache.deleteMap", "cache.deleteMapConfirm", "cache.deleteError",
+                    "cache.clearAll", "cache.clearAllConfirm", "cache.clearAllError"}
         for lang in ("en", "de", "ro"):
             with self.subTest(lang=lang):
                 values = json.loads((Path("static/i18n") / f"{lang}.json").read_text())
