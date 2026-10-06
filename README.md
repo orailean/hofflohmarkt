@@ -71,12 +71,22 @@ uvicorn webapp:app --port 8000
 # or: docker compose up
 ```
 
-Open http://localhost:8000 and follow the steps: load the flyer (file upload
-**or paste a URL**) and compute. Results show the **original flyer and the
+Open http://localhost:8000. The landing page shows saved maps in a horizontal
+carousel of their original flyer previews. Search by map or route details,
+then choose a saved route set on a card and open it immediately. You can also
+load a flyer by file upload or URL. The first visitor to a new PDF can
+calculate its routes. Later visitors to the same PDF
+see its saved route sets as soon as the PDF is hashed and cannot calculate it
+again.
+Matching uses the PDF contents, not the upload filename. Logged-in admins can
+load that PDF and use **Admin route controls → Recalculate routes** to replace
+a selected saved route set.
+
+Results show the **original flyer and the
 route-annotated version side by side**, one Google Maps link per route, an
 embedded interactive OpenStreetMap view, and a download grid with every
-artifact. Downloaded files use the flyer's name and the route type, so files
-from different flyers are easy to distinguish.
+artifact. Downloaded files use the flyer's name, route type, and format, even
+when served directly from the shared cache.
 
 When no cached calibration exists, the web app attempts a best-effort
 auto-calibration while loading the PDF: it extracts embedded PDF text, falls
@@ -113,6 +123,7 @@ Calibration-related environment variables:
 | `HOFFROUTE_AUTH_TTL_SECONDS` | `43200` | manual-calibration login lifetime |
 | `HOFFROUTE_AUTH_COOKIE_SECURE` | false | set true when serving only over HTTPS |
 | `HOFFROUTE_CALIB_CACHE_DIR` | `calibration_cache/` | where reusable calibrations are stored |
+| `HOFFROUTE_ROUTE_CACHE_DIR` | `route_cache/` | where shared route sets and artifacts are stored |
 | `HOFFROUTE_AUTOCALIB_CONTEXT` | `Germany` | fallback geocoding context appended to extracted street/station labels |
 | `HOFFROUTE_AUTOCALIB_MAX_CANDIDATES` | `20` | max labels to geocode during PDF load |
 | `HOFFROUTE_AUTOCALIB_MAX_RMS_M` | `250` | max accepted fit RMS for auto-calibration |
@@ -331,6 +342,21 @@ services:
 ```
 
 Then `docker compose pull && docker compose up -d`.
+
+Compose stores route results in a named `route_cache` volume so they survive
+container replacement. If an older container already has results in its
+container-local `/data/route_cache`, copy them before replacing it and restore
+them into the new volume:
+
+```bash
+mkdir -p route_cache
+docker cp "$(docker compose ps -q hoffroute):/data/route_cache/." ./route_cache/
+docker compose up -d --build
+docker cp ./route_cache/. "$(docker compose ps -q hoffroute):/data/route_cache/"
+docker compose exec -u root hoffroute chown -R appuser:appgroup /data/route_cache
+```
+
+Keep the volume when stopping Compose; `docker compose down -v` removes it.
 
 ### CI
 

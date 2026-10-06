@@ -50,7 +50,7 @@
   .adv-summary .n { background:var(--violet); }
   .step h2 { margin:0; font-size:16.5px; font-weight:700; }
   .muted { color:var(--mut); font-size:13px; }
-  input[type=text], input[type=password], input[type=number], select {
+  input[type=text], input[type=password], input[type=number], input[type=search], select {
     padding:8px 10px; border:1.5px solid var(--line); border-radius:10px;
     font-size:13.5px; background:#fbfbfc; outline:none; }
   input:focus, select:focus { border-color:var(--violet); }
@@ -97,6 +97,23 @@
           border-radius:10px; z-index:10; max-width:480px; box-shadow:var(--shadow); }
   .geo-results div { padding:7px 10px; cursor:pointer; font-size:12.5px; }
   .geo-results div:hover { background:#edf2ff; }
+  .overview-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .overview-nav { display:flex; gap:6px; }
+  .overview-nav button { padding:6px 12px; font-size:20px; line-height:1; }
+  #overviewSearch { display:block; width:min(420px,100%); margin:0 0 14px; }
+  #overviewList { display:flex; gap:16px; overflow-x:auto; scroll-snap-type:x mandatory;
+                  scroll-behavior:smooth; padding:4px 2px 14px; scrollbar-width:thin; }
+  .cache-map { border:1.5px solid var(--line); border-radius:14px;
+               flex:0 0 min(280px, 82vw); min-width:0; overflow:hidden;
+               scroll-snap-align:start; display:flex; flex-direction:column; }
+  .cache-map img { display:block; width:100%; height:220px; object-fit:contain;
+                   background:#f6f7f8; border-bottom:1.5px solid var(--line); }
+  .cache-map-body { display:flex; flex-direction:column; gap:9px; padding:14px; flex:1; }
+  .cache-map h3 { margin:0; font-size:15px; line-height:1.35; overflow-wrap:anywhere; }
+  .cache-map select { width:100%; }
+  .cache-map .primary { width:100%; margin-top:auto; }
+  .cache-list { display:flex; gap:8px; flex-wrap:wrap; }
+  .cache-list button { text-align:left; }
   /* results */
   .chips { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
   .chip { background:#f1f3f5; border-radius:999px; padding:5px 14px;
@@ -172,6 +189,21 @@
 </header>
 <main>
 
+  <div class="card" id="routeOverview">
+    <div class="overview-head">
+      <div class="step"><h2 data-i18n="cache.title"></h2></div>
+      <div class="overview-nav">
+        <button id="overviewPrev" class="ghost" type="button" data-i18n-title="cache.previous" aria-label="Previous maps">‹</button>
+        <button id="overviewNext" class="ghost" type="button" data-i18n-title="cache.next" aria-label="Next maps">›</button>
+      </div>
+    </div>
+    <input type="search" id="overviewSearch" data-i18n-ph="cache.search"
+           placeholder="Search calculated routes" autocomplete="off">
+    <p class="muted" id="overviewEmpty" data-i18n="cache.empty"></p>
+    <p class="muted" id="overviewNoMatch" data-i18n="cache.noMatch" style="display:none"></p>
+    <div id="overviewList" aria-label="Calculated maps"></div>
+  </div>
+
   <div class="card" id="step1">
     <div class="step"><div class="n">1</div><h2 data-i18n="step1.title"></h2></div>
     <div class="row">
@@ -183,6 +215,19 @@
       <div class="spin" id="spinner"></div>
     </div>
     <div class="err" id="err1"></div>
+  </div>
+
+  <div class="card" id="cachedMatch" style="display:none">
+    <div class="step"><h2 data-i18n="cache.match"></h2></div>
+    <div id="cachedRouteList"></div>
+  </div>
+
+  <div class="card" id="adminArea" style="display:none">
+    <div class="step"><h2 data-i18n="cache.adminIntro"></h2></div>
+    <p class="muted" data-i18n="cache.set"></p>
+    <button id="adminRebuildBtn" class="ghost" data-i18n="cache.rebuild"></button>
+    <div class="spin" id="spinnerAdmin"></div>
+    <div class="err" id="errAdmin"></div>
   </div>
 
   <div class="card" id="step2" style="display:none">
@@ -267,6 +312,8 @@
 const $ = id => document.getElementById(id);
 let job = null, cps = [], bbox = null, clickMode = null;
 let summary = null, activeKey = null;
+let overviewRoutes = [], cachedRoutes = [], cachedJobId = null;
+let selectedCacheId = null, adminRecalculate = false;
 let auth = {authenticated:false, user:null, manual_enabled:false};
 
 // ---------- i18n ----------
@@ -311,6 +358,9 @@ async function loadLang() {
   applyStatic();
   updateManualAccess();
   refreshStationSelects();
+  renderRouteOverview();
+  renderCachedRoutes();
+  updateSolveLabel();
 }
 
 $('langSel').onchange = () => {
@@ -354,6 +404,8 @@ function updateManualAccess() {
   $('loginForm').style.display = showLogin ? '' : 'none';
   $('loginStatus').style.display = showStatus ? '' : 'none';
   $('loginUserLabel').textContent = showStatus ? (auth.user || '') : '';
+  $('adminArea').style.display = auth.authenticated && cachedJobId &&
+    selectedCacheId && !adminRecalculate ? '' : 'none';
   if (job) {
     $('step2').style.display = auth.authenticated ? '' : 'none';
     if (!auth.authenticated) $('calibDetails').open = false;
@@ -362,6 +414,161 @@ function updateManualAccess() {
   }
   renumberSteps();
   refreshStationSelects();
+}
+
+function updateSolveLabel() {
+  $('solveBtn').textContent = t(adminRecalculate ? 'cache.rebuild' : 'step3.solve');
+}
+
+function routeButton(route, number) {
+  const button = document.createElement('button');
+  button.textContent = `${t('cache.open')} — ${routeSetLabel(route, number)}`;
+  button.onclick = () => openCachedRoute(route.id);
+  return button;
+}
+
+function routeSetLabel(route, number) {
+  const name = t('cache.setLabel', {n: number, id: route.id.slice(-8)});
+  return route.start || route.end
+    ? `${name} · ${route.start || t('step3.auto')} → ${route.end || t('step3.auto')}`
+    : name;
+}
+
+function updateOverviewNav() {
+  const list = $('overviewList');
+  $('overviewPrev').disabled = list.scrollLeft < 4;
+  $('overviewNext').disabled = list.scrollLeft + list.clientWidth >= list.scrollWidth - 4;
+  $('overviewPrev').setAttribute('aria-label', t('cache.previous'));
+  $('overviewNext').setAttribute('aria-label', t('cache.next'));
+  list.setAttribute('aria-label', t('cache.title'));
+}
+
+function searchText(value) {
+  return String(value || '').replaceAll('ß', 'ss').normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().trim();
+}
+
+function mapMatchesSearch(routes, query) {
+  if (!query) return true;
+  return routes.some(route => searchText([
+    route.title, route.start, route.end, route.pdf_hash_prefix,
+    ...route.variants.flatMap(variant => [variant.name, t('v.' + variant.key)]),
+  ].join(' ')).includes(query));
+}
+
+function renderRouteOverview() {
+  const container = $('overviewList');
+  const scrollLeft = container.scrollLeft;
+  container.replaceChildren();
+  const groups = new Map();
+  for (const route of overviewRoutes) {
+    const key = route.pdf_hash_prefix;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(route);
+  }
+  const query = searchText($('overviewSearch').value);
+  const matches = [...groups.values()].filter(routes =>
+    mapMatchesSearch(routes, query));
+  $('overviewEmpty').style.display = groups.size ? 'none' : '';
+  $('overviewNoMatch').style.display = groups.size && !matches.length ? '' : 'none';
+  for (const routes of matches) {
+    const card = document.createElement('div');
+    card.className = 'cache-map';
+    const preview = document.createElement('img');
+    preview.src = `/api/routes/${routes[0].id}/files/original.png`;
+    preview.alt = routes[0].title;
+    preview.loading = 'lazy';
+    card.appendChild(preview);
+    const body = document.createElement('div');
+    body.className = 'cache-map-body';
+    const title = document.createElement('h3');
+    title.textContent = routes[0].title;
+    body.appendChild(title);
+    const count = document.createElement('span');
+    count.className = 'muted';
+    count.textContent = t(routes.length === 1 ? 'cache.routeCountOne' :
+      'cache.routeCountMany', {n: routes.length});
+    body.appendChild(count);
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', t('cache.chooseSet'));
+    routes.forEach((route, index) => {
+      const option = document.createElement('option');
+      option.value = route.id;
+      option.textContent = routeSetLabel(route, index + 1);
+      select.appendChild(option);
+    });
+    body.appendChild(select);
+    const open = document.createElement('button');
+    open.className = 'primary';
+    open.textContent = t('cache.open');
+    open.onclick = () => openCachedRoute(select.value);
+    body.appendChild(open);
+    card.appendChild(body);
+    container.appendChild(card);
+  }
+  container.scrollLeft = scrollLeft;
+  requestAnimationFrame(updateOverviewNav);
+}
+
+$('overviewSearch').oninput = renderRouteOverview;
+
+function renderCachedRoutes() {
+  const container = $('cachedRouteList');
+  container.replaceChildren();
+  cachedRoutes.forEach((route, index) =>
+    container.appendChild(routeButton(route, index + 1)));
+}
+
+$('overviewPrev').onclick = () => $('overviewList').scrollBy({left:-300, behavior:'smooth'});
+$('overviewNext').onclick = () => $('overviewList').scrollBy({left:300, behavior:'smooth'});
+$('overviewList').onscroll = updateOverviewNav;
+window.addEventListener('resize', updateOverviewNav);
+
+async function refreshRouteOverview() {
+  const response = await fetch('/api/routes');
+  if (!response.ok) throw new Error(response.statusText);
+  overviewRoutes = (await response.json()).routes;
+  renderRouteOverview();
+  return overviewRoutes;
+}
+
+async function openCachedRoute(routeId) {
+  $('err1').textContent = '';
+  try {
+    const response = await fetch(`/api/routes/${routeId}`);
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    summary = await response.json();
+    selectedCacheId = routeId;
+    if (!cachedRoutes.some(route => route.id === routeId)) cachedJobId = null;
+    showResults();
+    updateManualAccess();
+    $('results').scrollIntoView({behavior:'smooth'});
+  } catch (e) { $('err1').textContent = e.message; }
+}
+
+function showCachedMatch(prepared) {
+  cachedJobId = prepared.job_id;
+  cachedRoutes = prepared.routes || [];
+  selectedCacheId = cachedRoutes[0]?.id || null;
+  adminRecalculate = false;
+  job = null;
+  $('step2').style.display = 'none';
+  $('step3').style.display = 'none';
+  $('results').style.display = 'none';
+  $('cachedMatch').style.display = '';
+  renderCachedRoutes();
+  updateManualAccess();
+}
+
+async function waitForPrepare(jobId) {
+  while (true) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const response = await fetch(`/api/prepare/${jobId}/status`);
+    if (!response.ok) throw new Error(response.statusText);
+    const prepared = await response.json();
+    if (prepared.status === 'error') throw new Error(prepared.detail || 'processing failed');
+    if (prepared.status === 'ready' || prepared.status === 'cached') return prepared;
+  }
 }
 
 $('loginBtn').onclick = async () => {
@@ -404,19 +611,31 @@ $('loadBtn').onclick = async () => {
       try { detail = (await r.json()).detail; } catch (_) {}
       throw new Error(detail || r.statusText);
     }
-    const {job_id} = await r.json();
-    // Poll until the background job finishes
-    while (true) {
-      await new Promise(res => setTimeout(res, 2000));
-      const sr = await fetch(`/api/prepare/${job_id}/status`);
-      if (!sr.ok) throw new Error(sr.statusText);
-      const s = await sr.json();
-      if (s.status === 'error') throw new Error(s.detail || 'processing failed');
-      if (s.status === 'ready') { job = s; break; }
-    }
-    initCalibration();
+    let prepared = await r.json();
+    if (prepared.status === 'processing')
+      prepared = await waitForPrepare(prepared.job_id);
+    if (prepared.status === 'cached') showCachedMatch(prepared);
+    else { job = prepared; initCalibration(); }
   } catch (e) { $('err1').textContent = e.message; }
   $('spinner').classList.remove('on'); $('loadBtn').disabled = false;
+};
+
+$('adminRebuildBtn').onclick = async () => {
+  $('errAdmin').textContent = '';
+  $('spinnerAdmin').classList.add('on');
+  $('adminRebuildBtn').disabled = true;
+  try {
+    const response = await fetch(`/api/admin/prepare/${cachedJobId}`, {method:'POST'});
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    job = await waitForPrepare(cachedJobId);
+    adminRecalculate = true;
+    $('cachedMatch').style.display = 'none';
+    initCalibration();
+    updateSolveLabel();
+    $('step3').scrollIntoView({behavior:'smooth'});
+  } catch (e) { $('errAdmin').textContent = e.message; }
+  $('spinnerAdmin').classList.remove('on');
+  $('adminRebuildBtn').disabled = false;
 };
 
 function initCalibration() {
@@ -438,7 +657,9 @@ function initCalibration() {
   $('mapimg').onload = () => drawOverlay();
   $('step3').style.display = '';
   $('results').style.display = 'none';
+  $('cachedMatch').style.display = 'none';
   updateManualAccess();
+  updateSolveLabel();
   renumberSteps();
   renderTable();
 }
@@ -659,7 +880,9 @@ $('solveBtn').onclick = async () => {
     const r = await fetch('/api/solve', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_id: job.job_id, calib,
-        start: $('selStart').value || null, end: $('selEnd').value || null})});
+        start: $('selStart').value || null, end: $('selEnd').value || null,
+        force: adminRecalculate,
+        supersedes: adminRecalculate ? selectedCacheId : null})});
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     while (true) {
       await new Promise(res => setTimeout(res, 2000));
@@ -669,8 +892,25 @@ $('solveBtn').onclick = async () => {
       if (s.status === 'error') throw new Error(s.detail || 'solve failed');
       if (s.status === 'ready') { summary = s; break; }
     }
+    const routeId = summary.cache_id;
+    cachedJobId = job.job_id;
+    cachedRoutes = overviewRoutes.filter(route =>
+      route.pdf_hash_prefix === routeId.slice(0, 20));
+    selectedCacheId = routeId;
+    adminRecalculate = false;
+    job = null;
+    $('step2').style.display = 'none';
+    $('step3').style.display = 'none';
+    $('cachedMatch').style.display = '';
+    renderCachedRoutes();
     showResults();
+    updateManualAccess();
     $('results').scrollIntoView({behavior:'smooth'});
+    refreshRouteOverview().then(() => {
+      cachedRoutes = overviewRoutes.filter(route =>
+        route.pdf_hash_prefix === routeId.slice(0, 20));
+      renderCachedRoutes();
+    }).catch(() => {});
   } catch (e) { $('err3').textContent = e.message; }
   $('spinner2').classList.remove('on'); $('solveBtn').disabled = false;
 };
@@ -788,6 +1028,7 @@ function selectVariant(key) {
 
 loadLang();
 checkAuth();
+refreshRouteOverview().catch(() => {});
 </script>
 </body>
 </html>

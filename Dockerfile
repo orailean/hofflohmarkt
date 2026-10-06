@@ -20,7 +20,7 @@ RUN pip install --prefix=/install -r requirements.txt
 FROM base AS runner
 COPY --from=builder /install /usr/local
 COPY --chown=appuser:appgroup \
-    hoffroute.py webapp.py flyer_streets.py station_resolver.py ./
+    hoffroute.py webapp.py flyer_streets.py station_resolver.py route_catalog.py ./
 COPY --chown=appuser:appgroup static/ static/
 RUN mkdir -p /data/jobs /data/calibration_cache /data/route_cache /data/logs \
     && chown -R appuser:appgroup /data

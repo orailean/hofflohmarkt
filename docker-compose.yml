@@ -13,6 +13,7 @@ services:
       APP_PORT: ${APP_PORT:-8000}
     volumes:
       - jobs:/data/jobs
+      - route_cache:/data/route_cache
     restart: unless-stopped
     deploy:
       resources:
@@ -29,3 +30,4 @@ services:
 
 volumes:
   jobs:
+  route_cache:

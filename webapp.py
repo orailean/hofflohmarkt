@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 import unicodedata
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
@@ -42,6 +43,7 @@ from fastapi.staticfiles import StaticFiles
 
 import hoffroute as hr
 import station_resolver as station_names
+import route_catalog
 
 
 def load_dotenv(path=Path(".env")):
@@ -372,6 +374,58 @@ def read_json(path: Path):
         return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def public_route_entry(route: dict) -> dict:
+    """Return catalog fields suitable for the public overview."""
+    return {key: route[key] for key in (
+        "id", "pdf_hash_prefix", "title", "created_at", "start", "end",
+        "variants")}
+
+
+def matching_routes(pdf_hash: str) -> list[dict]:
+    return [public_route_entry(route) for route in route_catalog.list_routes(
+        ROUTE_CACHE_DIR, JOBS_DIR, pdf_hash)]
+
+
+def cached_route_response(route: dict) -> dict:
+    response = build_response(
+        route["summary"], [], f"/api/routes/{route['id']}/files",
+        source_name=route["source_name"] or route["title"],
+        pdf_hash=route.get("pdf_hash") or route["pdf_hash_prefix"])
+    response["status"] = "ready"
+    response["cache_id"] = route["id"]
+    return response
+
+
+@app.get("/api/routes")
+def routes_list():
+    return {"routes": [public_route_entry(route) for route in
+                       route_catalog.list_routes(ROUTE_CACHE_DIR, JOBS_DIR)]}
+
+
+@app.get("/api/routes/{route_id}")
+def route_result(route_id: str):
+    route = route_catalog.get_route(ROUTE_CACHE_DIR, JOBS_DIR, route_id)
+    if route is None:
+        raise HTTPException(404, "unknown cached route")
+    return cached_route_response(route)
+
+
+@app.get("/api/routes/{route_id}/files/{filename}")
+def route_file(route_id: str, filename: str, download: bool = False):
+    route = route_catalog.get_route(ROUTE_CACHE_DIR, JOBS_DIR, route_id)
+    if route is None or filename not in route["summary"]["files"]:
+        raise HTTPException(404, "unknown cached artifact")
+    path = route["path"] / filename
+    if not path.is_file() or path.parent != route["path"]:
+        raise HTTPException(404, "unknown cached artifact")
+    names = artifact_download_names(
+        [filename], route["source_name"] or route["title"],
+        route.get("pdf_hash") or route["pdf_hash_prefix"])
+    return FileResponse(
+        path, filename=names[filename],
+        content_disposition_type="attachment" if download else "inline")
 
 
 def validate_calib(calib, strict=True):
@@ -1066,7 +1120,8 @@ def delete_calibration_cache(payload: dict, request: Request):
 
 
 def _run_prepare(jid: str, pdf_path: Path | None, url: str | None,
-                 uploaded_name: str | None = None):
+                 uploaded_name: str | None = None,
+                 ignore_route_cache: bool = False):
     d = JOBS_DIR / jid
     result_path = d / "result.json"
 
@@ -1087,12 +1142,26 @@ def _run_prepare(jid: str, pdf_path: Path | None, url: str | None,
         else:
             pdf = pdf_path
 
+        pdf_hash = pdf_sha256(pdf)
+        source_name = uploaded_name or pdf.name
+        (d / "meta.json").write_text(json.dumps({
+            "pdf_hash": pdf_hash,
+            "pdf_name": pdf.name,
+            "source_name": source_name,
+        }, ensure_ascii=False))
+        if not ignore_route_cache:
+            routes = matching_routes(pdf_hash)
+            if routes:
+                result_path.write_text(json.dumps({
+                    "status": "cached", "job_id": jid, "routes": routes,
+                }, ensure_ascii=False))
+                return
+
         doc, img = hr.render_page(pdf, RENDER_DPI)
         doc[0].get_pixmap(dpi=RENDER_DPI).save(d / "page.png")
         h, w = img.shape[:2]
         icons = hr.detect_station_icons(img)
         dots = hr.detect_dots(img, (0, 0, w, h))
-        pdf_hash = pdf_sha256(pdf)
         LOGGER.info(
             "prepare rendered job_id=%s pdf_hash=%s size=%dx%d icons=%d dots=%d",
             jid, pdf_hash, w, h, len(icons), len(dots))
@@ -1162,6 +1231,16 @@ def prepare(file: UploadFile | None = None, url: str = Form(None)):
             raise HTTPException(400, "not a PDF file")
         pdf_path = d / "map.pdf"
         pdf_path.write_bytes(data)
+        pdf_hash = hashlib.sha256(data).hexdigest()
+        routes = matching_routes(pdf_hash)
+        if routes:
+            (d / "meta.json").write_text(json.dumps({
+                "pdf_hash": pdf_hash, "pdf_name": pdf_path.name,
+                "source_name": file.filename or pdf_path.name,
+            }, ensure_ascii=False))
+            result = {"job_id": jid, "status": "cached", "routes": routes}
+            (d / "result.json").write_text(json.dumps(result, ensure_ascii=False))
+            return result
         LOGGER.info(
             "prepare stored uploaded pdf job_id=%s filename=%r bytes=%d",
             jid, file.filename, len(data))
@@ -1185,6 +1264,21 @@ def prepare_status(job_id: str):
     return result
 
 
+@app.post("/api/admin/prepare/{job_id}")
+def admin_prepare(job_id: str, request: Request):
+    if auth_user_from_request(request) is None:
+        raise HTTPException(403, "admin login required")
+    d = job_dir(job_id)
+    pdfs = [p for p in d.glob("*.pdf") if not p.name.startswith("route_")]
+    if not pdfs:
+        raise HTTPException(409, "job has no PDF")
+    (d / "result.json").unlink(missing_ok=True)
+    source_name = (read_json(d / "meta.json") or {}).get("source_name")
+    _prepare_executor.submit(
+        _run_prepare, job_id, pdfs[0], None, source_name, True)
+    return {"job_id": job_id, "status": "processing"}
+
+
 def _run_solve(jid: str, payload: dict, auth_user: str | None):
     d = JOBS_DIR / jid
     solve_path = d / "solve_result.json"
@@ -1198,108 +1292,77 @@ def _run_solve(jid: str, payload: dict, auth_user: str | None):
     try:
         meta = read_json(d / "meta.json") or {}
         pdf_hash = meta.get("pdf_hash")
-
-        submitted_calib = payload.get("calib") or None
-        calib = validate_calib(submitted_calib)
-        calib_source = f"manual:{auth_user}" if calib is not None else None
-        if calib is None:
-            calib = validate_calib(read_json(d / "calib.json"), strict=False)
-            calib_source = "job" if calib is not None else None
-        if calib is None and pdf_hash:
-            calib = load_cached_calib(pdf_hash)
-            calib_source = "cache" if calib is not None else None
-        LOGGER.info(
-            "solve calibration source job_id=%s source=%s control_points=%d stations=%d",
-            jid, calib_source or "none",
-            len(calib.get("control_points", [])) if calib else 0,
-            len(calib.get("stations", [])) if calib else 0)
-
-        pdfs = [p for p in d.glob("*.pdf") if not p.name.startswith("route_")]
-        if not pdfs:
-            _fail("job has no PDF")
+        if not pdf_hash:
+            _fail("job has no PDF hash")
             return
+        with route_catalog.map_lock(ROUTE_CACHE_DIR, pdf_hash):
+            existing = route_catalog.list_routes(
+                ROUTE_CACHE_DIR, JOBS_DIR, pdf_hash)
+            force = payload.get("force") is True
+            supersedes = payload.get("supersedes") or None
+            if supersedes and supersedes not in {r["id"] for r in existing}:
+                _fail("selected cached route does not belong to this map")
+                return
+            if existing and not force:
+                result = cached_route_response(existing[0])
+                solve_path.write_text(json.dumps(result, ensure_ascii=False))
+                LOGGER.info("solve reused route job_id=%s cache_id=%s",
+                            jid, existing[0]["id"])
+                return
 
-        out = d / "out"
-        rcache = route_cache_dir(
-            pdf_hash, calib, payload.get("start") or None,
-            payload.get("end") or None)
+            submitted_calib = payload.get("calib") or None
+            calib = validate_calib(submitted_calib)
+            calib_source = f"manual:{auth_user}" if calib is not None else None
+            if calib is None:
+                calib = validate_calib(read_json(d / "calib.json"), strict=False)
+                calib_source = "job" if calib is not None else None
+            if calib is None:
+                calib = load_cached_calib(pdf_hash)
+                calib_source = "cache" if calib is not None else None
+            pdfs = [p for p in d.glob("*.pdf") if not p.name.startswith("route_")]
+            if not pdfs:
+                _fail("job has no PDF")
+                return
 
-        base = f"/jobs/{jid}/out"
-
-        # --- route cache hit ---
-        raw_cache_path = rcache / "raw_summary.json" if rcache else None
-        if raw_cache_path and raw_cache_path.is_file():
-            LOGGER.info("solve route cache hit job_id=%s key=%s", jid, rcache.name)
+            out = d / "out"
             shutil.rmtree(out, ignore_errors=True)
-            shutil.copytree(rcache, out,
-                            ignore=shutil.ignore_patterns("raw_summary.json"),
-                            dirs_exist_ok=True)
-            raw = read_json(raw_cache_path)
-            summary = build_response(
-                raw,
-                ["(Ergebnis aus Cache geladen / served from route cache)"],
-                base,
-                source_name=meta.get("source_name") or meta.get("pdf_name"),
-                pdf_hash=pdf_hash,
-            )
-            LOGGER.info(
-                "solve complete (cached) job_id=%s variants=%d files=%d",
-                jid, len(summary["variants"]), len(summary["files"]))
-            summary["status"] = "ready"
-            solve_path.write_text(json.dumps(summary, ensure_ascii=False))
-            return
+            log_lines = []
 
-        # --- compute ---
-        shutil.rmtree(out, ignore_errors=True)
-        log_lines = []
+            def pipeline_log(message):
+                log_lines.append(message)
+                LOGGER.info("pipeline job_id=%s %s", jid, message)
 
-        def pipeline_log(message):
-            log_lines.append(message)
-            LOGGER.info("pipeline job_id=%s %s", jid, message)
-
-        try:
             summary = hr.run_pipeline(
                 pdfs[0], calib, out, dpi=RENDER_DPI,
                 start=payload.get("start") or None,
                 end=payload.get("end") or None,
                 log=pipeline_log,
                 resolve_stations=transit_stations_from_icons)
-        except Exception as e:
-            LOGGER.exception("solve pipeline failed job_id=%s error=%s", jid, e)
-            _fail(f"pipeline failed: {e}")
-            return
-
-        if calib:
-            calib_json = json.dumps(calib, indent=2, ensure_ascii=False)
-            (d / "calib.json").write_text(calib_json)
-            if pdf_hash:
+            cache_key = route_cache_dir(
+                pdf_hash, calib, payload.get("start") or None,
+                payload.get("end") or None).name
+            route_id = route_catalog.publish_route(
+                ROUTE_CACHE_DIR, cache_key, out,
+                {k: v for k, v in summary.items() if k != "log"},
+                {"pdf_hash": pdf_hash,
+                 "source_name": meta.get("source_name") or meta.get("pdf_name") or pdfs[0].name,
+                 "created_at": datetime.now(timezone.utc).isoformat(),
+                 "start": payload.get("start") or None,
+                 "end": payload.get("end") or None,
+                 "calibration_hash": calib_content_hash(calib)},
+                supersedes=supersedes)
+            if calib:
+                calib_json = json.dumps(calib, indent=2, ensure_ascii=False)
+                (d / "calib.json").write_text(calib_json)
                 cache_path(pdf_hash).write_text(calib_json)
                 LOGGER.info(
                     "solve saved calibration cache job_id=%s hash=%s source=%s",
                     jid, pdf_hash, calib_source or "unknown")
-
-        if rcache:
-            try:
-                rcache.mkdir(parents=True, exist_ok=True)
-                for f in out.iterdir():
-                    if f.is_file():
-                        shutil.copy2(f, rcache / f.name)
-                (rcache / "raw_summary.json").write_text(
-                    json.dumps({k: v for k, v in summary.items() if k != "log"},
-                               indent=2, ensure_ascii=False))
-                LOGGER.info("solve route cache saved key=%s", rcache.name)
-            except Exception as e:
-                LOGGER.warning("solve route cache save failed: %s", e)
-
-        summary = build_response(
-            summary, log_lines, base,
-            source_name=meta.get("source_name") or meta.get("pdf_name"),
-            pdf_hash=pdf_hash)
-        LOGGER.info(
-            "solve complete job_id=%s variants=%d files=%d",
-            jid, len(summary["variants"]), len(summary["files"]))
-        summary["status"] = "ready"
-        solve_path.write_text(json.dumps(summary, ensure_ascii=False))
+            result = cached_route_response(route_catalog.get_route(
+                ROUTE_CACHE_DIR, JOBS_DIR, route_id))
+            result["log"] = log_lines
+            solve_path.write_text(json.dumps(result, ensure_ascii=False))
+            LOGGER.info("solve complete job_id=%s cache_id=%s", jid, route_id)
     except Exception as e:
         LOGGER.exception("solve failed job_id=%s error=%s", jid, e)
         _fail(f"failed: {e}")
@@ -1310,6 +1373,18 @@ def solve(payload: dict, request: Request):
     jid = payload.get("job_id", "")
     d = job_dir(jid)
     auth_user = auth_user_from_request(request)
+    if (payload.get("force") or payload.get("supersedes")) and auth_user is None:
+        raise HTTPException(403, "admin login required for recalculation")
+    if "force" in payload and not isinstance(payload["force"], bool):
+        raise HTTPException(400, "force must be boolean")
+    if payload.get("supersedes"):
+        if payload.get("force") is not True:
+            raise HTTPException(400, "supersedes requires force")
+        meta = read_json(d / "meta.json") or {}
+        active = route_catalog.list_routes(
+            ROUTE_CACHE_DIR, JOBS_DIR, meta.get("pdf_hash"))
+        if payload["supersedes"] not in {r["id"] for r in active}:
+            raise HTTPException(400, "selected route does not belong to this map")
     submitted_calib = payload.get("calib") or None
     if submitted_calib is not None and auth_user is None:
         LOGGER.warning(
